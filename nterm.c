@@ -1,9 +1,9 @@
 /*
  * NABU BBS Telnet Terminal
- * v1.00.04 — CP437 font, ZModem receive (timeout +CRC32 fix)
+ * v1.00.05 — dual build: 80-col F18A (VDP_80COL) + 40-col stock TMS9918A
  *
- * Build:
- *   zcc +nabu -vn --list -m -create-app -compiler=sdcc -O3 --opt-code-speed nterm.c -o NABUTERM
+ * Build 80-col (F18A):   zcc +nabu ... -DVDP_80COL nterm.c -o NABUTERM80
+ * Build 40-col (stock):  zcc +nabu ...             nterm.c -o NABUTERM
  *
  * NOTE: vdp_newLine() does NOT reset cursor column (known NABULIB behaviour).
  *       Always call vdp_setCursor2(0, vdp_cursor.y) after it — use nl() here.
@@ -15,6 +15,15 @@
 #define FONT_CP437
 #define BIN_TYPE BIN_HOMEBREW
 #define DISABLE_CURSOR          /* we drive the cursor ourselves */
+
+/* Screen width — used by ansi.c and menu.c.
+ * 80-col F18A build: pass -DVDP_80COL on the compiler command line.
+ * 40-col stock TMS9918A build: omit the flag (default). */
+#ifdef VDP_80COL
+#  define SCREEN_COLS  80
+#else
+#  define SCREEN_COLS  40
+#endif
 
 #include "../NABULIB/NABU-LIB.h"
 #include "../NABULIB/RetroNET-FileStore.h"
@@ -89,7 +98,11 @@ void main(void)
     /* -- Display init (once) ------------------------------------------- */
     {
         uint8_t ci;
-        vdp_initTextMode80(VDP_WHITE, VDP_BLACK, true);
+#ifdef VDP_80COL
+        vdp_initTextMode80(VDP_WHITE, VDP_BLACK, true);  /* F18A 80-col   */
+#else
+        vdp_initTextMode(VDP_WHITE, VDP_BLACK, true);    /* stock 40-col  */
+#endif
         vdp_loadASCIIFont(ASCII);
         for (ci = 0u; ci < 128u; ci++)
             vdp_loadPatternToId(0x80u + ci,
@@ -108,7 +121,7 @@ void main(void)
         vdp_clearScreen();
         vdp_setCursor2(0, 0);   /* clearScreen does NOT reset cursor */
         vdp_setTextColor(VDP_CYAN, VDP_BLACK);
-        vdp_print((uint8_t *)"NABU BBS Terminal  v1.00.04");
+        vdp_print((uint8_t *)"NABU BBS Terminal  v1.00.05");
         nl();
         vdp_setTextColor(VDP_GRAY, VDP_BLACK);
         vdp_print((uint8_t *)"Connecting to: ");
@@ -142,7 +155,11 @@ void main(void)
 
         /* One-shot status hint — scrolls away as BBS output flows */
         vdp_setTextColor(VDP_DARK_YELLOW, VDP_BLACK);
+#ifdef VDP_80COL
         vdp_print((uint8_t *)"Connected.  CTRL-] to disconnect.  CTRL-E toggles echo.");
+#else
+        vdp_print((uint8_t *)"Connected. CTRL-] disc  CTRL-E echo");
+#endif
         nl();
         vdp_setTextColor(VDP_WHITE, VDP_BLACK);
 

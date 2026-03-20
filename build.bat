@@ -9,10 +9,19 @@ echo ***************************************************************************
 echo  Building NABU BBS Terminal
 echo ****************************************************************************
 
+echo.
+echo  [1/2] 40-col stock TMS9918A build -^> NABUTERM.nabu
+echo.
 zcc +nabu -vn --list -m -create-app -compiler=sdcc -O3 --opt-code-speed nterm.c -o NABUTERM
 
+echo.
+echo  [2/2] 80-col F18A build           -^> NABUTERM80.nabu
+echo.
+zcc +nabu -vn --list -m -create-app -compiler=sdcc -O3 --opt-code-speed -DVDP_80COL nterm.c -o NABUTERM80
+
+echo.
 echo ****************************************************************************
-echo  Done.  Output: NABUTERM.nabu
+echo  Done.  NABUTERM.nabu (stock 40-col)   NABUTERM80.nabu (F18A 80-col)
 echo ****************************************************************************
 
 pause

@@ -198,7 +198,7 @@ static void _dispatch_csi(uint8_t cmd)
         row = (p[0] > 0) ? (uint8_t)(p[0] - 1) : 0;
         col = (p[1] > 0) ? (uint8_t)(p[1] - 1) : 0;
         if (row > 23) row = 23;
-        if (col > 79) col = 79;
+        if (col > (uint8_t)(SCREEN_COLS - 1)) col = (uint8_t)(SCREEN_COLS - 1);
         vdp_setCursor2(col, row);
         break;
 
@@ -221,7 +221,7 @@ static void _dispatch_csi(uint8_t cmd)
     case 'C':
         n8  = (uint8_t)(p[0] > 0 ? p[0] : 1);
         col = (uint8_t)(vdp_cursor.x + n8);
-        if (col > 79) col = 79;
+        if (col > (uint8_t)(SCREEN_COLS - 1)) col = (uint8_t)(SCREEN_COLS - 1);
         vdp_setCursor2(col, vdp_cursor.y);
         break;
 
@@ -238,7 +238,7 @@ static void _dispatch_csi(uint8_t cmd)
         case 0:
             /* Erase cursor to end of screen */
             cx = vdp_cursor.x; cy = vdp_cursor.y;
-            for (j = cx; j < 80; j++) vdp_write(' ');
+            for (j = cx; j < (uint8_t)SCREEN_COLS; j++) vdp_write(' ');
             vdp_setCursor2(cx, cy);
             if (cy < 23) vdp_clearRows((uint8_t)(cy + 1), 23);
             break;
@@ -257,7 +257,7 @@ static void _dispatch_csi(uint8_t cmd)
         switch ((uint8_t)p[0]) {
         case 0:
             /* Erase cursor to end of line */
-            for (j = cx; j < 80; j++) vdp_write(' ');
+            for (j = cx; j < (uint8_t)SCREEN_COLS; j++) vdp_write(' ');
             vdp_setCursor2(cx, cy);
             break;
         case 1:
@@ -351,7 +351,7 @@ void ansi_feed(uint8_t c)
         if (c == 0x09) {
             /* HT: next 8-column tab stop */
             nx = (uint8_t)((vdp_cursor.x + 8) & ~7u);
-            if (nx < 80) vdp_setCursor2(nx, vdp_cursor.y);
+            if (nx < (uint8_t)SCREEN_COLS) vdp_setCursor2(nx, vdp_cursor.y);
             return;
         }
         if (c == 0x07) return; /* BEL — ignore */

@@ -8,13 +8,14 @@ colour rendering, and ZModem file receive.
 
 ---
 
-> ⚠️ **Development Build — Upgraded Hardware Required**
+> ⚠️ **Development Build**
 >
-> This build requires an **F18A or compatible** FPGA video upgrade in place of the stock
-> TMS9918A VDP. It uses 80-column text mode which is an F18A extension — it will **not run
-> on a stock NABU Personal Computer**.
+> Two binaries are produced from a single source. Choose the right one for your hardware:
 >
-> A 40-column build for stock hardware is planned. See [Development Phases](#development-phases).
+> | Binary | Mode | Hardware |
+> |--------|------|----------|
+> | `NABUTERM.nabu` | 40-column | Stock NABU — TMS9918A (default) |
+> | `NABUTERM80.nabu` | 80-column | F18A or compatible FPGA upgrade required |
 
 ---
 
@@ -49,7 +50,7 @@ Z88DK_DIR=/c/z88dk ZCCCFG=/c/z88dk/lib/config PATH=/c/z88dk/bin:$PATH \
   nterm.c -o "NABUTERM.nabu"
 ```
 
-Output: `NABUTERM.nabu` (~30 KB)
+Output: `NABUTERM.nabu` (40-col stock) and `NABUTERM80.nabu` (80-col F18A), ~30 KB each
 
 ---
 
@@ -103,14 +104,14 @@ the IA file store under the filename provided by the sender - **Broken**.
 | 5 | ZModem receive — CRC-16, CRC-32 fallback, IA file output | ⚠️ In progress |
 | 6 | CP437 font — full 256-character set, ANSI art rendering | ✅ Complete |
 | 7 | Per-character ANSI colour (G2 mode, 40 columns) | 🔲 Planned |
-| 8 | 40-column build for stock TMS9918A (no F18A required) | 🔲 Planned |
+| 8 | 40-column build for stock TMS9918A (no F18A required) | ✅ Complete |
 
 ---
 
 ## Known Limitations
 
-- **F18A required** — 80-column text mode is an F18A extension and is not available on the
-  stock TMS9918A. A 40-column build targeting stock hardware is planned (Phase 8).
+- **80-column mode requires F18A** — `NABUTERM80.nabu` uses an F18A extension and will not
+  run on a stock TMS9918A. Use `NABUTERM.nabu` for stock hardware.
 
 - **Background colour** — TMS9918A TEXT80 mode uses a single global foreground/background
   register. Per-character background colouring is not possible in this mode; all text renders

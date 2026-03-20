@@ -163,10 +163,14 @@ static void _draw_menu(void)
     vdp_setCursor2(0, 0);   /* clearScreen does NOT reset cursor */
 
     vdp_setTextColor(VDP_CYAN, VDP_BLACK);
-    vdp_print((uint8_t *)"NABU BBS Terminal  v1.00.04");
+    vdp_print((uint8_t *)"NABU BBS Terminal  v1.00.05");
     _mn();
     vdp_setTextColor(VDP_GRAY, VDP_BLACK);
+#ifdef VDP_80COL
     vdp_print((uint8_t *)"------------------------------------------------------------");
+#else
+    vdp_print((uint8_t *)"--------------------------------------");
+#endif
     _mn();
     _mn();
 
@@ -196,10 +200,18 @@ static void _draw_menu(void)
 
     _mn();
     vdp_setTextColor(VDP_GRAY, VDP_BLACK);
+#ifdef VDP_80COL
     vdp_print((uint8_t *)"------------------------------------------------------------");
+#else
+    vdp_print((uint8_t *)"--------------------------------------");
+#endif
     _mn();
     vdp_setTextColor(VDP_WHITE, VDP_BLACK);
+#ifdef VDP_80COL
     vdp_print((uint8_t *)"  [1-5] Connect   [E] Edit   [D] Delete   [Q] Quit");
+#else
+    vdp_print((uint8_t *)"[1-5]Connect [E]Edit [D]Del [Q]Quit");
+#endif
     _mn();
 }
 
