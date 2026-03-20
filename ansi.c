@@ -185,6 +185,20 @@ void ansi_viewport_right(void)
     }
 }
 
+/* Jump viewport left by 8 columns (Page Back key). */
+void ansi_viewport_page_left(void)
+{
+    _vp_x = (_vp_x >= 8u) ? (uint8_t)(_vp_x - 8u) : 0;
+    ansi_render_viewport();
+}
+
+/* Jump viewport right by 8 columns (Page Fwd key). */
+void ansi_viewport_page_right(void)
+{
+    _vp_x = (_vp_x <= 40u) ? (uint8_t)(_vp_x + 8u) : 48u;
+    ansi_render_viewport();
+}
+
 #endif /* VDP_G2COL */
 
 /* -----------------------------------------------------------------------

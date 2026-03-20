@@ -28,6 +28,10 @@ void ansi_render_viewport(void);
 void ansi_viewport_left(void);
 void ansi_viewport_right(void);
 
+/* Jump viewport left / right by 8 columns (Page Back / Page Fwd keys). */
+void ansi_viewport_page_left(void);
+void ansi_viewport_page_right(void);
+
 #endif /* VDP_G2COL */
 
 #endif /* ANSI_H */

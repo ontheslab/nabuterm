@@ -224,17 +224,19 @@ void main(void)
                     continue;
                 }
 
-                /* Viewport scroll keys -- G2 mode only, not sent to BBS */
+                /* NABU special keys (0xE0-0xFF): never send to BBS.
+                 * 0xE0-0xEA = key press codes; 0xF0-0xFA = key release
+                 * codes sent automatically after each press (code | 0x10).
+                 * Handle viewport scroll here; drop everything else. */
+                if (key >= 0xE0u) {
 #ifdef VDP_G2COL
-                if (key == 0xe1) {  /* Left arrow -- scroll viewport left  */
-                    ansi_viewport_left();
-                    continue;
-                }
-                if (key == 0xe0) {  /* Right arrow -- scroll viewport right */
-                    ansi_viewport_right();
-                    continue;
-                }
+                    if (key == 0xE1u) ansi_viewport_left();       /* Left  */
+                    else if (key == 0xE0u) ansi_viewport_right();  /* Right */
+                    else if (key == 0xE5u) ansi_viewport_page_left();  /* <||| */
+                    else if (key == 0xE4u) ansi_viewport_page_right(); /* |||> */
 #endif
+                    continue;  /* all 0xE0-0xFF consumed here, none to BBS */
+                }
 
                 if (key == 0x7F)    /* NABU backspace -> BS for server */
                     key = 0x08;
