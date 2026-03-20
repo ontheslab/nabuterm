@@ -80,6 +80,12 @@ static uint8_t _vp_x;              /* viewport left column   0-48         */
  * Kept as a static (not stack) to avoid ~768 bytes of Z80 stack pressure. */
 static uint8_t _vp_col[3][256];
 
+/* Bit array: which pattern IDs are present in each band's viewport slice.
+ * 256 bits = 32 bytes per band.  Bit (ch & 7) of byte (ch >> 3) is set when
+ * pattern ID ch appears in the current viewport for that band.
+ * Built by pass 1; drives pass 2 so only seen IDs get colour writes. */
+static uint8_t _vp_seen[3][32];
+
 /* Write colour (fg, bg) for pattern ch into band b of the VDP colour table.
  * Band 0 = rows 0-7, band 1 = rows 8-15, band 2 = rows 16-23.
  * Each pattern occupies 8 consecutive bytes in the colour table. */
@@ -167,11 +173,16 @@ static void _vbuf_scroll_up(void)
  */
 void ansi_render_viewport(void)
 {
-    uint8_t  row, col, ch, cl, band;
+    uint8_t  row, col, ch, cl, band, bm, bit, pid;
     uint16_t pi;
 
-    /* Pass 1: per-band colour pre-computation.
-     * Band 0 covers rows 0-7, band 1 rows 8-15, band 2 rows 16-23. */
+    /* Clear seen-bit arrays (96 bytes). */
+    for (band = 0u; band < 3u; band++)
+        for (col = 0u; col < 32u; col++)
+            _vp_seen[band][col] = 0u;
+
+    /* Pass 1: build _vp_col and _vp_seen for each band.
+     * Band 0 = rows 0-7, band 1 = rows 8-15, band 2 = rows 16-23. */
     for (band = 0u; band < 3u; band++) {
         for (row = (uint8_t)(band * 8u);
              row < (uint8_t)(band * 8u + 8u);
@@ -180,6 +191,8 @@ void ansi_render_viewport(void)
                 ch = _vbuf_char[row][(uint8_t)(_vp_x + col)];
                 cl = _vbuf_col[row][(uint8_t)(_vp_x + col)];
                 _vp_col[band][ch] = cl;
+                _vp_seen[band][(uint8_t)(ch >> 3u)] |=
+                    (uint8_t)(1u << (ch & 7u));
             }
         }
     }
@@ -187,16 +200,28 @@ void ansi_render_viewport(void)
     /* Wait for VBlank before writing VRAM to reduce visible tearing. */
     vdp_waitVDPReadyInt();
 
-    /* Pass 2: bulk-write all three colour table bands.
-     * One sequential 2048-byte burst per band; no name table changes yet. */
+    /* Pass 2: write colour entries only for pattern IDs actually present
+     * in the viewport.  Iterates the 32-byte seen-bit array per band;
+     * typical BBS content uses ~50-80 distinct chars per band, so this
+     * writes roughly 50-80 * 3 * (1 addr + 8 data) vs 256 * 3 * (1 addr
+     * + 8 data) for a full table write.  Much faster in practice. */
     for (band = 0u; band < 3u; band++) {
-        vdp_setWriteAddress(_vdpColorTableAddr + (uint16_t)band * 2048u);
-        for (pi = 0u; pi < 256u; pi++) {
-            cl = _vp_col[band][(uint8_t)pi];
-            IO_VDPDATA = cl; IO_VDPDATA = cl;
-            IO_VDPDATA = cl; IO_VDPDATA = cl;
-            IO_VDPDATA = cl; IO_VDPDATA = cl;
-            IO_VDPDATA = cl; IO_VDPDATA = cl;
+        for (pi = 0u; pi < 32u; pi++) {
+            bm = _vp_seen[band][(uint8_t)pi];
+            if (!bm) continue;
+            for (bit = 0u; bit < 8u; bit++) {
+                if (bm & (uint8_t)(1u << bit)) {
+                    pid = (uint8_t)((uint8_t)(pi << 3u) | bit);
+                    cl  = _vp_col[band][pid];
+                    vdp_setWriteAddress(_vdpColorTableAddr
+                                        + (uint16_t)band * 2048u
+                                        + (uint16_t)pid  * 8u);
+                    IO_VDPDATA = cl; IO_VDPDATA = cl;
+                    IO_VDPDATA = cl; IO_VDPDATA = cl;
+                    IO_VDPDATA = cl; IO_VDPDATA = cl;
+                    IO_VDPDATA = cl; IO_VDPDATA = cl;
+                }
+            }
         }
     }
 
