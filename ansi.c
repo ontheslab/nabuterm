@@ -68,11 +68,16 @@ static uint8_t _last_vdp_fg;
  * --------------------------------------------------------------------- */
 #ifdef VDP_G2COL
 
-static uint8_t _vbuf_char[24][80]; /* character at each logical cell */
-static uint8_t _vbuf_col[24][80];  /* packed colour: (fg<<4)|bg        */
-static uint8_t _log_x;             /* logical cursor column  0-79      */
-static uint8_t _log_y;             /* logical cursor row     0-23      */
-static uint8_t _vp_x;              /* viewport left column   0-48      */
+static uint8_t _vbuf_char[24][80]; /* character at each logical cell     */
+static uint8_t _vbuf_col[24][80];  /* packed colour: (fg<<4)|bg           */
+static uint8_t _log_x;             /* logical cursor column  0-79         */
+static uint8_t _log_y;             /* logical cursor row     0-23         */
+static uint8_t _vp_x;              /* viewport left column   0-48         */
+/* Pre-computed colour per pattern ID for the render passes.
+ * Indexed by pattern ID (0-255); stores packed (fg<<4)|bg.
+ * Built by pass 1 of ansi_render_viewport(); used by pass 2.
+ * Kept as a static (not stack) to avoid blowing 256 bytes off the Z80 stack. */
+static uint8_t _vp_col[256];
 
 /* Write one char to virtual buffer at (x,y) with current fg/bg;
  * also pushes to VDP if the cell falls within the visible viewport. */
@@ -119,17 +124,48 @@ static void _vbuf_scroll_up(void)
     }
 }
 
-/* Render the full 32x24 viewport from the virtual buffer to the VDP. */
+/* Render the full 32x24 viewport from the virtual buffer to the VDP.
+ *
+ * Three-pass approach to eliminate colour flash:
+ *   Pass 1 (CPU only)  -- build _vp_col[]: final colour per pattern ID.
+ *                         Bottom-right wins when a pattern appears multiple
+ *                         times; this matches the hardware constraint.
+ *   Pass 2 (VRAM)      -- bulk-write colour table for all 256 patterns in
+ *                         one sequential burst before any name table changes.
+ *                         VBlank sync first to reduce screen tear.
+ *   Pass 3 (VRAM)      -- update name table.  No colour changes during this
+ *                         pass, so no per-character colour flash is visible.
+ */
 void ansi_render_viewport(void)
 {
-    uint8_t row, col;
-    uint8_t ch, cl;
+    uint8_t  row, col, ch, cl;
+    uint16_t pi;
+
+    /* Pass 1: determine final colour for each pattern ID in the viewport. */
     for (row = 0; row < 24u; row++) {
         for (col = 0; col < 32u; col++) {
             ch = _vbuf_char[row][(uint8_t)(_vp_x + col)];
             cl = _vbuf_col[row][(uint8_t)(_vp_x + col)];
-            vdp_colorizePattern(ch, (uint8_t)(cl >> 4), (uint8_t)(cl & 0x0Fu));
-            vdp_putPattern(col, row, ch);
+            _vp_col[ch] = cl;
+        }
+    }
+
+    /* Wait for VBlank before writing VRAM to reduce visible tearing. */
+    vdp_waitVDPReadyInt();
+
+    /* Pass 2: bulk-write colour table -- all 256 patterns, no name changes. */
+    for (pi = 0; pi < 256u; pi++) {
+        cl = _vp_col[(uint8_t)pi];
+        vdp_colorizePattern((uint8_t)pi,
+                            (uint8_t)(cl >> 4),
+                            (uint8_t)(cl & 0x0Fu));
+    }
+
+    /* Pass 3: update name table -- colours are stable, no flash. */
+    for (row = 0; row < 24u; row++) {
+        for (col = 0; col < 32u; col++) {
+            vdp_putPattern(col, row,
+                           _vbuf_char[row][(uint8_t)(_vp_x + col)]);
         }
     }
 }
@@ -492,9 +528,16 @@ void ansi_reset(void)
                 _vbuf_col[row][col]  = packed;
             }
         }
-        /* Reset all pattern colours to white on black */
-        for (pi = 0; pi < 256u; pi++)
-            vdp_colorizePattern((uint8_t)pi, VDP_WHITE, VDP_BLACK);
+        /* Reset all pattern colours to white on black; also initialise
+         * _vp_col so the first ansi_render_viewport() pass 2 has valid
+         * data for patterns not yet seen in the viewport. */
+        {
+            uint8_t pk = (uint8_t)((VDP_WHITE << 4) | VDP_BLACK);
+            for (pi = 0; pi < 256u; pi++) {
+                _vp_col[pi] = pk;
+                vdp_colorizePattern((uint8_t)pi, VDP_WHITE, VDP_BLACK);
+            }
+        }
     }
 #else
     _last_vdp_fg = 0xFF;

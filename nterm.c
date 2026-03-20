@@ -153,9 +153,13 @@ void main(void)
 #ifdef VDP_G2COL
         /* G2 colour mode: 32 visible cols, 80-col virtual buffer.
          * autoScroll=false: we manage vertical scrolling via the virtual
-         * buffer so NABULIB does not interfere. */
+         * buffer so NABULIB does not interfere.
+         * vdp_enableVDPReadyInt() enables the VDP VBlank interrupt so
+         * vdp_waitVDPReadyInt() in ansi_render_viewport() can sync to
+         * the beam and reduce screen tear during full redraws. */
         vdp_initG2Mode(VDP_BLACK, false, false, false, false);
         _load_font();
+        vdp_enableVDPReadyInt();
 #endif
 
         /* Reset sub-module state.  ansi_reset() sets G2 pattern colours
