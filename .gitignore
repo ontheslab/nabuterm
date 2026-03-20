@@ -1,0 +1,34 @@
+# Build output — .nabu binaries (upper and lower case)
+*.nabu
+*.NABU
+
+# z88dk also emits a no-extension binary alongside the .nabu
+NABUTERM
+
+# Linker / assembler reports
+*.map
+*.lis
+
+# Other compiler outputs
+*.com
+*.COM
+*.sym
+*.ihx
+
+# z88dk compiler temporaries
+*.o
+*.asm
+*.i
+*.lst
+zcc_opt.def
+zcc_proj.lst
+
+# Windows
+Thumbs.db
+desktop.ini
+xfer_n.bat
+
+
+# Private development files — never publish these
+docs/
+DEVLOG.md
