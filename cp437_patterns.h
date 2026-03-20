@@ -15,6 +15,10 @@
  * Source: IBM PC Code Page 437 8x8 font, originally from:
  *   https://github.com/greiman/SSD1306Ascii/blob/master/src/fonts/cp437font8x8.h
  *   (SSD1306Ascii project by greiman, MIT licence)
+ * 
+ * Characters converted via python scrit and editor, character 90 degree left
+ * rotation was required also.
+ * 
  * Row-major, MSB = leftmost pixel -- correct format for TMS9918A VDP.
  *
  * ASCII[768]   : chars 0x20-0x7F, compatible with vdp_loadASCIIFont()

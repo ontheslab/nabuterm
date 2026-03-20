@@ -163,7 +163,7 @@ static void _draw_menu(void)
     vdp_setCursor2(0, 0);   /* clearScreen does NOT reset cursor */
 
     vdp_setTextColor(VDP_CYAN, VDP_BLACK);
-    vdp_print((uint8_t *)"NABU BBS Terminal  v1.00.02");
+    vdp_print((uint8_t *)"NABU BBS Terminal  v1.00.04");
     _mn();
     vdp_setTextColor(VDP_GRAY, VDP_BLACK);
     vdp_print((uint8_t *)"------------------------------------------------------------");

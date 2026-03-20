@@ -51,7 +51,7 @@
 #define _ZTIMEOUT  200000u
 
 /* -----------------------------------------------------------------------
- * Module state -- all static (no malloc on Z80)
+ * Module state -- all static
  * --------------------------------------------------------------------- */
 static uint8_t  _zhandle;           /* active TCP handle              */
 
