@@ -1,12 +1,12 @@
 /*
  * NABU BBS Telnet Terminal
- * v1.00.05 — dual build: 80-col F18A (VDP_80COL) + 40-col stock TMS9918A
+ * v1.01.00 -- dual build: G2 colour (stock TMS9918A) + 80-col F18A
  *
- * Build 80-col (F18A):   zcc +nabu ... -DVDP_80COL nterm.c -o NABUTERM80
- * Build 40-col (stock):  zcc +nabu ...             nterm.c -o NABUTERM
+ * Build G2 colour (stock):  zcc +nabu ...             nterm.c -o NABUTERM
+ * Build 80-col (F18A):      zcc +nabu ... -DVDP_80COL nterm.c -o NABUTERM80
  *
  * NOTE: vdp_newLine() does NOT reset cursor column (known NABULIB behaviour).
- *       Always call vdp_setCursor2(0, vdp_cursor.y) after it — use nl() here.
+ *       Always call vdp_setCursor2(0, vdp_cursor.y) after it -- use nl() here.
  */
 
 /* -----------------------------------------------------------------------
@@ -16,21 +16,22 @@
 #define BIN_TYPE BIN_HOMEBREW
 #define DISABLE_CURSOR          /* we drive the cursor ourselves */
 
-/* Screen width — used by ansi.c and menu.c.
- * 80-col F18A build: pass -DVDP_80COL on the compiler command line.
- * 40-col stock TMS9918A build: omit the flag (default). */
-#ifdef VDP_80COL
-#  define SCREEN_COLS  80
-#else
-#  define SCREEN_COLS  40
+/* Screen width -- used by ansi.c and menu.c.
+ * Both builds use 80 as the logical column width:
+ *   G2 build  : 80-column virtual buffer; 32 columns visible (viewport scroll)
+ *   F18A build: 80 columns on screen directly */
+#define SCREEN_COLS  80
+
+/* G2 colour mode: active when NOT building for F18A. */
+#ifndef VDP_80COL
+#  define VDP_G2COL
 #endif
 
 #include "../NABULIB/NABU-LIB.h"
 #include "../NABULIB/RetroNET-FileStore.h"
 #include "cp437_patterns.h"
 
-/* Sub-modules: included directly so they share the single translation unit.
- * Do NOT include NABU-LIB.h or RetroNET-FileStore.h inside these files. */
+/* Sub-modules included directly -- single translation unit. */
 #include "telnet.c"
 #include "ansi.c"
 #include "menu.c"
@@ -43,16 +44,13 @@
 static uint8_t _rx[RX_BUF];
 static uint8_t _tx[1];
 
-/* Active connection host/port — filled by menu_run() each session */
 static uint8_t  _conn_host[MENU_HOST_MAX + 1];
 static uint8_t  _conn_host_len;
 static uint16_t _conn_port;
 
 /* -----------------------------------------------------------------------
- * zm_detect — ZModem autostart detector (technique from dctelnet/Xfer.c)
- *
+ * zm_detect -- ZModem autostart detector (technique from dctelnet/Xfer.c)
  * Counts through the ZRQINIT sequence: * * 0x18 B 0 0
- * Uses one byte of state. Returns true when the full sequence is matched.
  * --------------------------------------------------------------------- */
 static uint8_t _zm = 0;
 
@@ -71,13 +69,26 @@ static bool zm_detect(uint8_t b)
 }
 
 /* -----------------------------------------------------------------------
- * nl() — newline + column reset for use in splash/disconnect sections.
- * (vdp_newLine alone leaves cursor.x unchanged — see NABULIB gotcha.)
+ * nl() -- newline + column reset for text-mode splash/message sections.
+ * vdp_newLine() alone leaves cursor.x unchanged -- see NABULIB gotcha.
  * --------------------------------------------------------------------- */
 static void nl(void)
 {
     vdp_newLine();
     vdp_setCursor2(0, vdp_cursor.y);
+}
+
+/* -----------------------------------------------------------------------
+ * _load_font -- load ASCII + CP437 extended patterns into VDP.
+ * Must be called after every VDP mode initialisation.
+ * --------------------------------------------------------------------- */
+static void _load_font(void)
+{
+    uint8_t ci;
+    vdp_loadASCIIFont(ASCII);
+    for (ci = 0u; ci < 128u; ci++)
+        vdp_loadPatternToId(0x80u + ci,
+            (uint8_t *)CP437_EXT + (uint16_t)ci * 8u);
 }
 
 /* Proactive IAC DO SGA sent immediately on every new connection */
@@ -93,35 +104,29 @@ void main(void)
     int32_t  got;
     uint16_t i;
     uint8_t  key;
-    bool     force_echo;    /* CTRL-E override: echo locally even if server echoes */
+    bool     force_echo;
 
-    /* -- Display init (once) ------------------------------------------- */
-    {
-        uint8_t ci;
+    /* -- Display init: text mode for the preset menu ------------------- */
 #ifdef VDP_80COL
-        vdp_initTextMode80(VDP_WHITE, VDP_BLACK, true);  /* F18A 80-col   */
+    vdp_initTextMode80(VDP_WHITE, VDP_BLACK, true);
 #else
-        vdp_initTextMode(VDP_WHITE, VDP_BLACK, true);    /* stock 40-col  */
+    vdp_initTextMode(VDP_WHITE, VDP_BLACK, true);
 #endif
-        vdp_loadASCIIFont(ASCII);
-        for (ci = 0u; ci < 128u; ci++)
-            vdp_loadPatternToId(0x80u + ci,
-                (uint8_t *)CP437_EXT + (uint16_t)ci * 8u);
-    }
+    _load_font();
     initNABULib();
 
     /* -- Outer reconnect loop ------------------------------------------ */
     while (1) {
 
-        /* Show the preset menu; blocks until user picks a host or quits */
+        /* Show preset menu (text mode); blocks until user picks or quits */
         if (!menu_run(_conn_host, &_conn_host_len, &_conn_port))
-            return;  /* Q pressed — return from main() to restart NABU */
+            return;  /* Q pressed -- return to restart NABU */
 
-        /* Connecting splash */
+        /* Connecting splash (text mode -- colours work here) */
         vdp_clearScreen();
-        vdp_setCursor2(0, 0);   /* clearScreen does NOT reset cursor */
+        vdp_setCursor2(0, 0);
         vdp_setTextColor(VDP_CYAN, VDP_BLACK);
-        vdp_print((uint8_t *)"NABU BBS Terminal  v1.00.05");
+        vdp_print((uint8_t *)"NABU BBS Terminal  v1.01.00");
         nl();
         vdp_setTextColor(VDP_GRAY, VDP_BLACK);
         vdp_print((uint8_t *)"Connecting to: ");
@@ -130,38 +135,48 @@ void main(void)
         nl();
         vdp_setTextColor(VDP_WHITE, VDP_BLACK);
 
-        /* Reset sub-module state for the new session */
-        tn_init();
-        ansi_reset();
-        _zm       = 0;
-        force_echo = false;
-
         handle = rn_TCPOpen(_conn_host_len, _conn_host, _conn_port, 0xFF);
 
         if (handle == 0xFF) {
+            /* Connection failed -- stay in text mode, show error, loop */
             vdp_setTextColor(VDP_LIGHT_RED, VDP_BLACK);
             vdp_print((uint8_t *)"Connection failed!");
             nl();
             vdp_setTextColor(VDP_WHITE, VDP_BLACK);
             vdp_print((uint8_t *)"Press any key to return to menu...");
-            while (!isKeyPressed())
-                ;
+            while (!isKeyPressed()) ;
             getChar();
-            continue;   /* back to menu */
+            continue;
         }
+
+        /* -- Switch to terminal display mode --------------------------- */
+#ifdef VDP_G2COL
+        /* G2 colour mode: 32 visible cols, 80-col virtual buffer.
+         * autoScroll=false: we manage vertical scrolling via the virtual
+         * buffer so NABULIB does not interfere. */
+        vdp_initG2Mode(VDP_BLACK, false, false, false, false);
+        _load_font();
+#endif
+
+        /* Reset sub-module state.  ansi_reset() sets G2 pattern colours
+         * in G2 mode -- must be called AFTER vdp_initG2Mode(). */
+        tn_init();
+        ansi_reset();
+        _zm        = 0;
+        force_echo = false;
 
         /* Proactively request Suppress-Go-Ahead (full-duplex mode) */
         rn_TCPHandleWrite(handle, 0, 3, _sga_req);
 
-        /* One-shot status hint — scrolls away as BBS output flows */
-        vdp_setTextColor(VDP_DARK_YELLOW, VDP_BLACK);
+        /* One-shot status hint -- scrolls away as BBS output flows */
+        vdp_clearScreen();
+        vdp_setCursor2(0, 0);
 #ifdef VDP_80COL
         vdp_print((uint8_t *)"Connected.  CTRL-] to disconnect.  CTRL-E toggles echo.");
 #else
-        vdp_print((uint8_t *)"Connected. CTRL-] disc  CTRL-E echo");
+        vdp_print((uint8_t *)"Connected. CTRL-] disc  CTRL-E echo  Arrows scroll");
 #endif
         nl();
-        vdp_setTextColor(VDP_WHITE, VDP_BLACK);
 
         /* -- Main telnet loop ------------------------------------------ */
         while (1) {
@@ -182,10 +197,6 @@ void main(void)
                 for (i = 0; i < (uint16_t)got; i++) {
                     if (tn_feed(_rx[i], handle)) {
                         if (zm_detect(_rx[i])) {
-                            /* Pass bytes already in _rx after the detection
-                             * point -- they may contain ZSINIT/ZFILE frames
-                             * that rn_TCPHandleRead() already consumed from
-                             * the IA buffer and would otherwise be lost. */
                             {
                                 uint8_t rem = (uint8_t)(
                                     (int32_t)got - (int32_t)(i + 1));
@@ -205,39 +216,55 @@ void main(void)
             if (isKeyPressed()) {
                 key = getChar();
 
-                if (key == 0x1D)    /* CTRL-]  — local disconnect */
+                if (key == 0x1D)    /* CTRL-]  -- local disconnect */
                     break;
 
-                if (key == 0x05) {  /* CTRL-E  — toggle local echo override */
+                if (key == 0x05) {  /* CTRL-E  -- toggle local echo override */
                     force_echo = !force_echo;
                     continue;
                 }
 
-                if (key == 0x7F)    /* NABU backspace → BS for server */
+                /* Viewport scroll keys -- G2 mode only, not sent to BBS */
+#ifdef VDP_G2COL
+                if (key == 0xe1) {  /* Left arrow -- scroll viewport left  */
+                    ansi_viewport_left();
+                    continue;
+                }
+                if (key == 0xe0) {  /* Right arrow -- scroll viewport right */
+                    ansi_viewport_right();
+                    continue;
+                }
+#endif
+
+                if (key == 0x7F)    /* NABU backspace -> BS for server */
                     key = 0x08;
 
-                if (key == 0x0A)    /* Enter → CR for telnet NVT */
+                if (key == 0x0A)    /* Enter -> CR for telnet NVT */
                     key = 0x0D;
 
                 _tx[0] = key;
                 rn_TCPHandleWrite(handle, 0, 1, _tx);
 
-                /* Echo locally when server is not echoing, or override active */
                 if (!tn_server_echo || force_echo)
                     ansi_feed(key);
             }
         }
 
-        /* -- Disconnect ------------------------------------------------ */
         rn_TCPHandleClose(handle);
+
+        /* -- Switch back to text mode for menu ------------------------- */
+#ifdef VDP_G2COL
+        vdp_initTextMode(VDP_WHITE, VDP_BLACK, true);
+        _load_font();
+#endif
+
         vdp_setTextColor(VDP_DARK_YELLOW, VDP_BLACK);
         nl();
         vdp_print((uint8_t *)"--- Disconnected ---");
         nl();
         vdp_setTextColor(VDP_WHITE, VDP_BLACK);
         vdp_print((uint8_t *)"Press any key to return to menu...");
-        while (!isKeyPressed())
-            ;
+        while (!isKeyPressed()) ;
         getChar();
         /* Loop back to menu */
     }
