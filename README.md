@@ -8,6 +8,16 @@ colour rendering, and ZModem file receive.
 
 ---
 
+> ⚠️ **Development Build — Upgraded Hardware Required**
+>
+> This build requires an **F18A or compatible** FPGA video upgrade in place of the stock
+> TMS9918A VDP. It uses 80-column text mode which is an F18A extension — it will **not run
+> on a stock NABU Personal Computer**.
+>
+> A 40-column build for stock hardware is planned. See [Development Phases](#development-phases).
+
+---
+
 ## Features
 
 - **Telnet** — RFC 854 IAC negotiation: ECHO, SGA, subnegotiation (SB/SE) fully handled
@@ -93,10 +103,14 @@ the IA file store under the filename provided by the sender - **Broken**.
 | 5 | ZModem receive — CRC-16, CRC-32 fallback, IA file output | ⚠️ In progress |
 | 6 | CP437 font — full 256-character set, ANSI art rendering | ✅ Complete |
 | 7 | Per-character ANSI colour (G2 mode, 40 columns) | 🔲 Planned |
+| 8 | 40-column build for stock TMS9918A (no F18A required) | 🔲 Planned |
 
 ---
 
 ## Known Limitations
+
+- **F18A required** — 80-column text mode is an F18A extension and is not available on the
+  stock TMS9918A. A 40-column build targeting stock hardware is planned (Phase 8).
 
 - **Background colour** — TMS9918A TEXT80 mode uses a single global foreground/background
   register. Per-character background colouring is not possible in this mode; all text renders
