@@ -86,6 +86,23 @@ static void _load_font(void)
 {
     uint8_t ci;
     vdp_loadASCIIFont(ASCII);
+#ifdef VDP_G2COL
+    /* With splitThirds=true the pattern generator is split into three 2048-byte
+     * banks (rows 0-7, 8-15, 16-23).  vdp_loadASCIIFont only writes to bank 0;
+     * we must copy the same data into banks 1 and 2 manually. */
+    {
+        const uint8_t *src;
+        const uint8_t *end;
+        src = ASCII;
+        end = src + 768u;
+        vdp_setWriteAddress(_vdpPatternGeneratorTableAddr + 2048u + 0x100u);
+        do { IO_VDPDATA = *src; src++; } while (src != end);
+        src = ASCII;
+        vdp_setWriteAddress(_vdpPatternGeneratorTableAddr + 4096u + 0x100u);
+        do { IO_VDPDATA = *src; src++; } while (src != end);
+    }
+#endif
+    /* vdp_loadPatternToId already writes to all 3 banks when splitThirds=true. */
     for (ci = 0u; ci < 128u; ci++)
         vdp_loadPatternToId(0x80u + ci,
             (uint8_t *)CP437_EXT + (uint16_t)ci * 8u);
@@ -157,7 +174,7 @@ void main(void)
          * vdp_enableVDPReadyInt() enables the VDP VBlank interrupt so
          * vdp_waitVDPReadyInt() in ansi_render_viewport() can sync to
          * the beam and reduce screen tear during full redraws. */
-        vdp_initG2Mode(VDP_BLACK, false, false, false, false);
+        vdp_initG2Mode(VDP_BLACK, false, false, false, true);
         _load_font();
         vdp_enableVDPReadyInt();
 #endif

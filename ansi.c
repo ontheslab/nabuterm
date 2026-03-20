@@ -13,10 +13,10 @@
  *
  * Builds:
  *   VDP_G2COL (default, stock NABU): 80-column virtual buffer, 32-column
- *   visible viewport.  Per-character colour via vdp_colorizePattern().
- *   Hardware note: the TMS9918A colour table is indexed by pattern ID, not
- *   screen position.  When two cells share the same character code, the
- *   last-written colour wins globally.  Acceptable for typical BBS content.
+ *   visible viewport.  Per-character colour via direct VRAM writes.
+ *   Hardware note: the TMS9918A G2 colour table is indexed by pattern ID.
+ *   With splitThirds=true the screen is divided into three 8-row bands, each
+ *   with its own colour table, giving 3x the colour independence.
  *
  *   VDP_80COL (F18A 80-column): direct VDP writes, global colour register.
  */
@@ -73,11 +73,34 @@ static uint8_t _vbuf_col[24][80];  /* packed colour: (fg<<4)|bg           */
 static uint8_t _log_x;             /* logical cursor column  0-79         */
 static uint8_t _log_y;             /* logical cursor row     0-23         */
 static uint8_t _vp_x;              /* viewport left column   0-48         */
-/* Pre-computed colour per pattern ID for the render passes.
- * Indexed by pattern ID (0-255); stores packed (fg<<4)|bg.
+/* Pre-computed colour per pattern ID per band for the render passes.
+ * _vp_col[band][pattern_id] stores packed (fg<<4)|bg.
+ * Three bands correspond to rows 0-7, 8-15, 16-23 (splitThirds layout).
  * Built by pass 1 of ansi_render_viewport(); used by pass 2.
- * Kept as a static (not stack) to avoid blowing 256 bytes off the Z80 stack. */
-static uint8_t _vp_col[256];
+ * Kept as a static (not stack) to avoid ~768 bytes of Z80 stack pressure. */
+static uint8_t _vp_col[3][256];
+
+/* Write colour (fg, bg) for pattern ch into band b of the VDP colour table.
+ * Band 0 = rows 0-7, band 1 = rows 8-15, band 2 = rows 16-23.
+ * Each pattern occupies 8 consecutive bytes in the colour table. */
+static void _g2_colorize(uint8_t b, uint8_t ch, uint8_t fg, uint8_t bg)
+{
+    uint8_t c = (uint8_t)((fg << 4) | bg);
+    uint8_t i;
+    vdp_setWriteAddress(_vdpColorTableAddr
+                        + (uint16_t)b  * 2048u
+                        + (uint16_t)ch * 8u);
+    for (i = 0u; i < 8u; i++)
+        IO_VDPDATA = c;
+}
+
+/* Write colour (fg, bg) for pattern ch into all three VDP colour table bands. */
+static void _g2_colorize_all(uint8_t ch, uint8_t fg, uint8_t bg)
+{
+    _g2_colorize(0u, ch, fg, bg);
+    _g2_colorize(1u, ch, fg, bg);
+    _g2_colorize(2u, ch, fg, bg);
+}
 
 /* Write one char to virtual buffer at (x,y) with current fg/bg;
  * also pushes to VDP if the cell falls within the visible viewport. */
@@ -86,7 +109,7 @@ static void _g2_put(uint8_t x, uint8_t y, uint8_t c)
     _vbuf_char[y][x] = c;
     _vbuf_col[y][x]  = (uint8_t)((_fg << 4) | _bg);
     if (x >= _vp_x && x < (uint8_t)(_vp_x + 32u)) {
-        vdp_colorizePattern(c, _fg, _bg);
+        _g2_colorize((uint8_t)(y >> 3u), c, _fg, _bg);
         vdp_putPattern((uint8_t)(x - _vp_x), y, c);
     }
 }
@@ -126,44 +149,60 @@ static void _vbuf_scroll_up(void)
 
 /* Render the full 32x24 viewport from the virtual buffer to the VDP.
  *
- * Three-pass approach to eliminate colour flash:
- *   Pass 1 (CPU only)  -- build _vp_col[]: final colour per pattern ID.
- *                         Bottom-right wins when a pattern appears multiple
- *                         times; this matches the hardware constraint.
- *   Pass 2 (VRAM)      -- bulk-write colour table for all 256 patterns in
- *                         one sequential burst before any name table changes.
- *                         VBlank sync first to reduce screen tear.
+ * Three-pass approach to eliminate colour flash with splitThirds=true.
+ * The screen is divided into three 8-row bands, each with an independent
+ * colour table in VRAM (at offsets 0, 2048, 4096 from _vdpColorTableAddr).
+ *
+ *   Pass 1 (CPU only)  -- build _vp_col[band][]: final colour per pattern ID
+ *                         per band.  Last-write-wins within each band row
+ *                         range.  Three independent tables eliminate the
+ *                         colour conflict when the same char appears in
+ *                         different colours on different screen sections.
+ *   Pass 2 (VRAM)      -- write each band's colour table in one sequential
+ *                         2048-byte burst (256 patterns * 8 bytes each).
+ *                         Only 3 vdp_setWriteAddress calls total.
+ *                         VBlank sync before first write reduces tearing.
  *   Pass 3 (VRAM)      -- update name table.  No colour changes during this
- *                         pass, so no per-character colour flash is visible.
+ *                         pass so no per-character colour flash is visible.
  */
 void ansi_render_viewport(void)
 {
-    uint8_t  row, col, ch, cl;
+    uint8_t  row, col, ch, cl, band;
     uint16_t pi;
 
-    /* Pass 1: determine final colour for each pattern ID in the viewport. */
-    for (row = 0; row < 24u; row++) {
-        for (col = 0; col < 32u; col++) {
-            ch = _vbuf_char[row][(uint8_t)(_vp_x + col)];
-            cl = _vbuf_col[row][(uint8_t)(_vp_x + col)];
-            _vp_col[ch] = cl;
+    /* Pass 1: per-band colour pre-computation.
+     * Band 0 covers rows 0-7, band 1 rows 8-15, band 2 rows 16-23. */
+    for (band = 0u; band < 3u; band++) {
+        for (row = (uint8_t)(band * 8u);
+             row < (uint8_t)(band * 8u + 8u);
+             row++) {
+            for (col = 0u; col < 32u; col++) {
+                ch = _vbuf_char[row][(uint8_t)(_vp_x + col)];
+                cl = _vbuf_col[row][(uint8_t)(_vp_x + col)];
+                _vp_col[band][ch] = cl;
+            }
         }
     }
 
     /* Wait for VBlank before writing VRAM to reduce visible tearing. */
     vdp_waitVDPReadyInt();
 
-    /* Pass 2: bulk-write colour table -- all 256 patterns, no name changes. */
-    for (pi = 0; pi < 256u; pi++) {
-        cl = _vp_col[(uint8_t)pi];
-        vdp_colorizePattern((uint8_t)pi,
-                            (uint8_t)(cl >> 4),
-                            (uint8_t)(cl & 0x0Fu));
+    /* Pass 2: bulk-write all three colour table bands.
+     * One sequential 2048-byte burst per band; no name table changes yet. */
+    for (band = 0u; band < 3u; band++) {
+        vdp_setWriteAddress(_vdpColorTableAddr + (uint16_t)band * 2048u);
+        for (pi = 0u; pi < 256u; pi++) {
+            cl = _vp_col[band][(uint8_t)pi];
+            IO_VDPDATA = cl; IO_VDPDATA = cl;
+            IO_VDPDATA = cl; IO_VDPDATA = cl;
+            IO_VDPDATA = cl; IO_VDPDATA = cl;
+            IO_VDPDATA = cl; IO_VDPDATA = cl;
+        }
     }
 
     /* Pass 3: update name table -- colours are stable, no flash. */
-    for (row = 0; row < 24u; row++) {
-        for (col = 0; col < 32u; col++) {
+    for (row = 0u; row < 24u; row++) {
+        for (col = 0u; col < 32u; col++) {
             vdp_putPattern(col, row,
                            _vbuf_char[row][(uint8_t)(_vp_x + col)]);
         }
@@ -193,9 +232,8 @@ static void _g2_clearrows(uint8_t top, uint8_t bot)
             _vbuf_col[row][col]  = packed;
         }
     }
-    /* Write visible (viewport) columns only -- space is space regardless
-     * of column, so one colorizePattern call covers all cleared cells. */
-    vdp_colorizePattern(' ', VDP_WHITE, VDP_BLACK);
+    /* Ensure space has white-on-black colour in all three bands. */
+    _g2_colorize_all(' ', VDP_WHITE, VDP_BLACK);
     for (row = top; row <= bot; row++) {
         for (col = 0; col < 32u; col++) {
             vdp_putPattern(col, row, ' ');
@@ -515,28 +553,32 @@ void ansi_reset(void)
 
 #ifdef VDP_G2COL
     {
-        uint8_t  row, col;
+        uint8_t  row, col, band;
         uint16_t pi;
         uint8_t  packed;
         packed = (uint8_t)((VDP_WHITE << 4) | VDP_BLACK);
         _log_x = 0;
         _log_y = 0;
         _vp_x  = 0;
-        for (row = 0; row < 24u; row++) {
-            for (col = 0; col < 80u; col++) {
+        for (row = 0u; row < 24u; row++) {
+            for (col = 0u; col < 80u; col++) {
                 _vbuf_char[row][col] = ' ';
                 _vbuf_col[row][col]  = packed;
             }
         }
-        /* Reset all pattern colours to white on black; also initialise
-         * _vp_col so the first ansi_render_viewport() pass 2 has valid
-         * data for patterns not yet seen in the viewport. */
-        {
-            uint8_t pk = (uint8_t)((VDP_WHITE << 4) | VDP_BLACK);
-            for (pi = 0; pi < 256u; pi++) {
-                _vp_col[pi] = pk;
-                vdp_colorizePattern((uint8_t)pi, VDP_WHITE, VDP_BLACK);
-            }
+        /* Init _vp_col for all three bands so the first render has valid data
+         * for pattern IDs not yet seen in the viewport. */
+        for (pi = 0u; pi < 256u; pi++) {
+            _vp_col[0][pi] = packed;
+            _vp_col[1][pi] = packed;
+            _vp_col[2][pi] = packed;
+        }
+        /* Write white-on-black to all three VDP colour table bands in
+         * sequential 2048-byte bursts (256 patterns * 8 bytes each). */
+        for (band = 0u; band < 3u; band++) {
+            vdp_setWriteAddress(_vdpColorTableAddr + (uint16_t)band * 2048u);
+            for (pi = 0u; pi < 2048u; pi++)
+                IO_VDPDATA = packed;
         }
     }
 #else
