@@ -13,13 +13,13 @@ colour rendering, and ZModem file receive.
 - **Telnet** — RFC 854 IAC negotiation: ECHO, SGA, subnegotiation (SB/SE) fully handled
 - **ANSI/VT100 parser** — cursor movement, SGR colours, erase sequences, save/restore cursor
 - **IBM CP437 font** — full 256-character set loaded at startup: printable ASCII, box-drawing,
-  block graphics (░▒▓█) and extended characters for authentic ANSI BBS art
-- **Host preset menu** — five preset slots persisted to `NBTERM.CFG` on the IA file store;
+  block graphics (░▒▓█) and extended characters for ANSI BBS art
+- **Host preset menu** — five preset slots saved to `NBTERM.CFG` on the IA file store;
   editable in-session, survives restarts
 - **ZModem receive** *(implemented, not yet working)* — ZModem receive state machine with
   CRC-16 and automatic CRC-32 fallback; currently timing out mid-transfer against real BBS
   systems. Under active investigation.
-- **Reconnect loop** — returns to the preset menu after each session; no restart required
+- **Reconnect loop** — returns to the main (preset) menu after each session.
 
 ---
 
@@ -64,7 +64,7 @@ Load `NABUTERM.nabu` on the NABU. The preset menu appears on startup.
 | `CTRL-E` | Toggle local echo override |
 
 ZModem transfers start automatically when the BBS initiates one. Received files are saved to
-the IA file store under the filename provided by the sender.
+the IA file store under the filename provided by the sender - **Broken**.
 
 ---
 
@@ -74,7 +74,7 @@ the IA file store under the filename provided by the sender.
 |------|-------------|
 | `nterm.c` | Main entry point — init, reconnect loop, main telnet loop |
 | `telnet.c/h` | RFC 854 IAC state machine, option negotiation, server echo flag |
-| `ansi.c/h` | ANSI/VT100 escape sequence parser, SGR colour mapping, VDP output |
+| `ansi.c/h` | ANSI/VT100 escape sequence parser, ANSI colour sequence mapping, VDP output |
 | `zmodem.c/h` | ZModem receive state machine, CRC-16/32, IA file store output |
 | `menu.c/h` | Host preset menu, IA file-store persistence, line input |
 | `cp437_patterns.h` | IBM CP437 8×8 font — ASCII and extended character bitmaps |
@@ -113,9 +113,7 @@ the IA file store under the filename provided by the sender.
 ## Background
 
 Built to connect a real NABU Personal Computer to modern ANSI BBS systems running over TCP/IP
-via the RetroNET Internet Adapter. The NABU's TMS9918A VDP has no native ANSI interpretation,
-so the full escape sequence parser runs in software on the Z80, feeding character-by-character
-output to the VDP.
+via the RetroNET Internet Adapter.
 
 The CP437 font data is derived from the
 [SSD1306Ascii project](https://github.com/greiman/SSD1306Ascii/blob/master/src/fonts/cp437font8x8.h)
