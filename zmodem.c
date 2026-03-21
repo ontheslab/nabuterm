@@ -217,11 +217,15 @@ static void _zphex(uint8_t v)
  *         -1             : timeout or disconnect
  *
  * XON (0x11), XOFF (0x13) and high-bit variants (0x91, 0x93) are
- * discarded.  XPRZ escapes actual file data containing these bytes,
- * so any raw XON/XOFF in the stream is protocol-level flow control.
- * XPRZ's zshhdr() sends XON after every ZHEX header to uncork the
- * receiver; without this skip the XON leaks into _rxdata() as a
- * spurious first data byte and causes a buffer overflow at byte 1024.
+ * discarded in TWO places:
+ *   1. Before the ZDLE check -- handles standalone flow-control bytes
+ *      injected anywhere in the stream (e.g. after ZHEX headers).
+ *   2. After ZDLE, before reading the escape code -- handles XON/XOFF
+ *      injected between ZDLE and the escape byte (e.g. AmiExpress sends
+ *      raw XON after every ZCRCW sub-packet; if that XON arrives in the
+ *      TCP buffer immediately after the ZDLE terminator prefix, it is
+ *      mistaken for an escape code and decoded as a spurious data byte,
+ *      causing _rxdata() to overflow at byte 1024).
  * --------------------------------------------------------------------- */
 static int16_t _rxzd(void)
 {
@@ -229,13 +233,20 @@ static int16_t _rxzd(void)
     for (;;) {
         b = _rxb();
         if (b < 0) return -1;
-        /* Discard XON/XOFF flow-control bytes -- not data content */
+        /* Discard XON/XOFF flow-control bytes */
         if ((uint8_t)b == 0x11u || (uint8_t)b == 0x13u ||
             (uint8_t)b == 0x91u || (uint8_t)b == 0x93u)
             continue;
         if ((uint8_t)b != _ZD) return b;
-        b = _rxb();
-        if (b < 0) return -1;
+        /* ZDLE seen: read the escape code, skipping any XON/XOFF between */
+        for (;;) {
+            b = _rxb();
+            if (b < 0) return -1;
+            if ((uint8_t)b == 0x11u || (uint8_t)b == 0x13u ||
+                (uint8_t)b == 0x91u || (uint8_t)b == 0x93u)
+                continue;
+            break;
+        }
         switch ((uint8_t)b) {
         case _ZCRCE: return (int16_t)0x100;
         case _ZCRCG: return (int16_t)0x101;
@@ -744,8 +755,10 @@ void zmodem_receive(uint8_t tcpHandle, uint8_t *pre, uint8_t prelen)
                 break;
             }
             rn_fileHandleEmptyFile(fh);
-            /* Request data from position 0 */
-            _txzhex(_ZRPOS, 0, 0, 0, 0);
+            /* Request data from position 0.
+             * _txpos() appends XON (0x11) after the ZHEX frame --
+             * required to uncork AmiExpress after its ZFILE ZCRCW. */
+            _txpos(_ZRPOS, _zfpos);
             vdp_setTextColor(VDP_GRAY, VDP_BLACK);
             vdp_print((uint8_t *)"rp=");
             vdp_write(_zlast_wr >= 0 ? 'Y' : 'N');
