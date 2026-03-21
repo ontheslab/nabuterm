@@ -32,6 +32,18 @@ void ansi_viewport_right(void);
 void ansi_viewport_page_left(void);
 void ansi_viewport_page_right(void);
 
+#else /* VDP_80COL */
+
+/* Cycle through the built-in text colour table (Ctrl+T).
+ * Applies immediately to the global VDP colour register. */
+void ansi_cycle_colour(void);
+
 #endif /* VDP_G2COL */
+
+/* Show the key-reference help overlay and block until any key is pressed.
+ * Triggered by the NABU SYM key (0xE8) in both builds.
+ * G2:    restores screen via ansi_render_viewport() on dismiss.
+ * 80-col: restores VRAM from _vdp_textBuffer on dismiss. */
+void ansi_show_help(void);
 
 #endif /* ANSI_H */

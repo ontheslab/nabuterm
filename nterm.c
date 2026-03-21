@@ -1,6 +1,6 @@
 /*
  * NABU BBS Telnet Terminal
- * v1.01.00 -- dual build: G2 colour (stock TMS9918A) + 80-col F18A
+ * v1.01.01 -- Ctrl+T colour cycle (80-col); SYM key help overlay (both)
  *
  * Build G2 colour (stock):  zcc +nabu ...             nterm.c -o NABUTERM
  * Build 80-col (F18A):      zcc +nabu ... -DVDP_80COL nterm.c -o NABUTERM80
@@ -143,7 +143,7 @@ void main(void)
         vdp_clearScreen();
         vdp_setCursor2(0, 0);
         vdp_setTextColor(VDP_CYAN, VDP_BLACK);
-        vdp_print((uint8_t *)"NABU BBS Terminal  v1.01.00");
+        vdp_print((uint8_t *)"NABU BBS Terminal  v1.01.01");
         nl();
         vdp_setTextColor(VDP_GRAY, VDP_BLACK);
         vdp_print((uint8_t *)"Connecting to: ");
@@ -193,9 +193,9 @@ void main(void)
         vdp_clearScreen();
         vdp_setCursor2(0, 0);
 #ifdef VDP_80COL
-        vdp_print((uint8_t *)"Connected.  CTRL-] to disconnect.  CTRL-E toggles echo.");
+        vdp_print((uint8_t *)"Connected.  ^] disc  ^E echo  ^T colour  SYM help");
 #else
-        vdp_print((uint8_t *)"Connected. CTRL-] disc  CTRL-E echo  Arrows scroll");
+        vdp_print((uint8_t *)"Connected.  ^] disc  ^E echo  Arrows scroll  SYM help");
 #endif
         nl();
 
@@ -245,16 +245,26 @@ void main(void)
                     continue;
                 }
 
+#ifndef VDP_G2COL
+                if (key == 0x14) { /* CTRL-T  -- cycle text colour (80-col) */
+                    ansi_cycle_colour();
+                    continue;
+                }
+#endif
+
                 /* NABU special keys (0xE0-0xFF): never send to BBS.
                  * 0xE0-0xEA = key press codes; 0xF0-0xFA = key release
                  * codes sent automatically after each press (code | 0x10).
-                 * Handle viewport scroll here; drop everything else. */
+                 * Handle viewport scroll and SYM help here; drop the rest. */
                 if (key >= 0xE0u) {
 #ifdef VDP_G2COL
-                    if (key == 0xE1u) ansi_viewport_left();       /* Left  */
-                    else if (key == 0xE0u) ansi_viewport_right();  /* Right */
-                    else if (key == 0xE5u) ansi_viewport_page_left();  /* <||| */
-                    else if (key == 0xE4u) ansi_viewport_page_right(); /* |||> */
+                    if      (key == 0xE1u) ansi_viewport_left();
+                    else if (key == 0xE0u) ansi_viewport_right();
+                    else if (key == 0xE5u) ansi_viewport_page_left();
+                    else if (key == 0xE4u) ansi_viewport_page_right();
+                    else if (key == 0xE8u) ansi_show_help();  /* SYM */
+#else
+                    if (key == 0xE8u) ansi_show_help();       /* SYM */
 #endif
                     continue;  /* all 0xE0-0xFF consumed here, none to BBS */
                 }

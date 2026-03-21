@@ -316,17 +316,145 @@ void ansi_viewport_page_right(void)
 #endif
 
 #ifndef VDP_G2COL
-/* Text-mode deferred colour: only write VDP register 7 when fg changes. */
-static uint8_t _last_vdp_fg;
+/* Colour cycle for 80-col mode.  SGR colour codes are not applied to the
+ * VDP colour register mid-stream -- doing so flashes the entire screen.
+ * The user cycles through this table with Ctrl+T. */
+static const uint8_t _80col_colours[7] = {
+    VDP_WHITE, VDP_CYAN, VDP_LIGHT_GREEN, VDP_LIGHT_YELLOW,
+    VDP_LIGHT_BLUE, VDP_MAGENTA, VDP_LIGHT_RED
+};
+static uint8_t _80col_ci = 0; /* index into _80col_colours */
 
-static void _apply_colour(void)
+void ansi_cycle_colour(void)
 {
-    if (_fg != _last_vdp_fg) {
-        vdp_setTextColor(_fg, VDP_BLACK);
-        _last_vdp_fg = _fg;
+    _80col_ci = (uint8_t)(_80col_ci + 1u);
+    if (_80col_ci >= 7u) _80col_ci = 0u;
+    vdp_setTextColor(_80col_colours[_80col_ci], VDP_BLACK);
+}
+#endif /* !VDP_G2COL */
+
+/* -----------------------------------------------------------------------
+ * Help overlay
+ *
+ * Writes a box directly to the VDP name table without touching the virtual
+ * buffer (_vbuf_char) or _vdp_textBuffer, so the original screen content
+ * is preserved and can be restored after dismissal.
+ *
+ * G2 mode:   restore by calling ansi_render_viewport() -- free.
+ * 80-col:    restore by replaying _vdp_textBuffer back to VRAM.
+ * --------------------------------------------------------------------- */
+
+/* Write one character directly to the VDP name table at physical (x, y).
+ * Uses _vdpCursorMaxXFull (32 for G2, 80 for TEXT80) as the row stride. */
+static void _help_put(uint8_t x, uint8_t y, uint8_t ch)
+{
+    vdp_setWriteAddress(_vdpPatternNameTableAddr
+                        + (uint16_t)y * (uint16_t)_vdpCursorMaxXFull
+                        + (uint16_t)x);
+    IO_VDPDATA = ch;
+}
+
+/* Write a null-terminated string directly to the VDP name table at (x, y). */
+static void _help_puts(uint8_t x, uint8_t y, uint8_t *s)
+{
+    while (*s) {
+        _help_put(x, y, *s);
+        x++;
+        s++;
     }
 }
+
+/* Show the key-reference overlay and block until any key is pressed.
+ * G2:   box at col 1, width 30 (inner 28), rows 8-14.
+ * 80-col: box at col 19, width 42 (inner 40), rows 9-16. */
+void ansi_show_help(void)
+{
+    uint8_t i;
+
+#ifdef VDP_G2COL
+    /* Top border */
+    _help_put(1u, 8u, 0xC9u);
+    for (i = 2u; i <= 29u; i++) _help_put(i, 8u, 0xCDu);
+    _help_put(30u, 8u, 0xBBu);
+    /* Title row */
+    _help_put(1u, 9u, 0xBAu);
+    _help_puts(2u, 9u, (uint8_t *)"   NABU Terminal  v1.01.01  ");
+    _help_put(30u, 9u, 0xBAu);
+    /* Separator */
+    _help_put(1u, 10u, 0xCCu);
+    for (i = 2u; i <= 29u; i++) _help_put(i, 10u, 0xCDu);
+    _help_put(30u, 10u, 0xB9u);
+    /* Key rows */
+    _help_put(1u, 11u, 0xBAu);
+    _help_puts(2u, 11u, (uint8_t *)" L/R arrows  scroll 1 col   ");
+    _help_put(30u, 11u, 0xBAu);
+    _help_put(1u, 12u, 0xBAu);
+    _help_puts(2u, 12u, (uint8_t *)" Pg L/R      scroll 8 cols  ");
+    _help_put(30u, 12u, 0xBAu);
+    _help_put(1u, 13u, 0xBAu);
+    _help_puts(2u, 13u, (uint8_t *)" SYM key     this help      ");
+    _help_put(30u, 13u, 0xBAu);
+    /* Bottom border */
+    _help_put(1u, 14u, 0xC8u);
+    for (i = 2u; i <= 29u; i++) _help_put(i, 14u, 0xCDu);
+    _help_put(30u, 14u, 0xBCu);
+    /* Wait for any key, then restore from virtual buffer */
+    while (!isKeyPressed()) ;
+    getChar();
+    ansi_render_viewport();
+#else
+    {
+        uint8_t row, col;
+        /* Top border */
+        _help_put(19u, 9u, 0xC9u);
+        for (i = 20u; i <= 59u; i++) _help_put(i, 9u, 0xCDu);
+        _help_put(60u, 9u, 0xBBu);
+        /* Title */
+        _help_put(19u, 10u, 0xBAu);
+        _help_puts(20u, 10u,
+            (uint8_t *)"   NABU BBS Terminal  v1.01.01  F18A    ");
+        _help_put(60u, 10u, 0xBAu);
+        /* Separator */
+        _help_put(19u, 11u, 0xCCu);
+        for (i = 20u; i <= 59u; i++) _help_put(i, 11u, 0xCDu);
+        _help_put(60u, 11u, 0xB9u);
+        /* Key rows */
+        _help_put(19u, 12u, 0xBAu);
+        _help_puts(20u, 12u,
+            (uint8_t *)" Ctrl+T     Cycle text colour           ");
+        _help_put(60u, 12u, 0xBAu);
+        _help_put(19u, 13u, 0xBAu);
+        _help_puts(20u, 13u,
+            (uint8_t *)" Ctrl+]     Disconnect                  ");
+        _help_put(60u, 13u, 0xBAu);
+        _help_put(19u, 14u, 0xBAu);
+        _help_puts(20u, 14u,
+            (uint8_t *)" Ctrl+E     Toggle local echo           ");
+        _help_put(60u, 14u, 0xBAu);
+        _help_put(19u, 15u, 0xBAu);
+        _help_puts(20u, 15u,
+            (uint8_t *)" SYM key    This help                   ");
+        _help_put(60u, 15u, 0xBAu);
+        /* Bottom border */
+        _help_put(19u, 16u, 0xC8u);
+        for (i = 20u; i <= 59u; i++) _help_put(i, 16u, 0xCDu);
+        _help_put(60u, 16u, 0xBCu);
+        /* Wait for any key, then restore affected rows from _vdp_textBuffer.
+         * _vdp_textBuffer was not updated (we wrote directly to VRAM), so
+         * it still holds the original screen content. */
+        while (!isKeyPressed()) ;
+        getChar();
+        for (row = 9u; row <= 16u; row++) {
+            vdp_setWriteAddress(_vdpPatternNameTableAddr
+                                + (uint16_t)row
+                                  * (uint16_t)_vdpCursorMaxXFull);
+            for (col = 0u; col < 80u; col++)
+                IO_VDPDATA =
+                    _vdp_textBuffer[(uint16_t)row * 80u + col];
+        }
+    }
 #endif
+}
 
 /* -----------------------------------------------------------------------
  * _parse_params
@@ -395,9 +523,9 @@ static void _sgr(uint16_t *p, uint8_t np)
             _bg = _bright[v - 100];
         }
     }
-    /* In text mode, colour application is deferred to the next character
-     * write (via _apply_colour) to avoid per-sequence VDP register thrash.
-     * In G2 mode, fg/bg are stored per cell at write time -- no deferral. */
+    /* _fg and _bg are updated above.  In G2 mode they are applied per cell
+     * at write time.  In 80-col mode they are intentionally not written to
+     * the VDP colour register (Ctrl+T controls the global colour instead). */
 }
 
 /* -----------------------------------------------------------------------
@@ -607,9 +735,9 @@ void ansi_reset(void)
         }
     }
 #else
-    _last_vdp_fg = 0xFF;
-    vdp_setTextColor(VDP_WHITE, VDP_BLACK);
-    _last_vdp_fg = VDP_WHITE;
+    /* Apply the user-selected cycle colour; do not reset the cycle index
+     * (_80col_ci) so the user's chosen colour persists across sessions. */
+    vdp_setTextColor(_80col_colours[_80col_ci], VDP_BLACK);
 #endif
 }
 
@@ -677,10 +805,9 @@ void ansi_feed(uint8_t c)
 #ifdef VDP_G2COL
             _g2_write(c);
 #else
-            /* Apply deferred colour change just before the write so a
-             * burst of SGR codes triggers at most one VDP reg write
-             * per drawn character. */
-            _apply_colour();
+            /* SGR colour changes are not applied here -- writing the
+             * global colour register mid-stream flashes the entire
+             * 80-col screen.  Colour is set by Ctrl+T (cycle) only. */
             vdp_write(c);
 #endif
         }
