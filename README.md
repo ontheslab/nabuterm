@@ -103,7 +103,7 @@ the IA file store under the filename provided by the sender - **Broken**.
 | 4 | Host preset menu — IA file-store persistence, reconnect loop, CTRL-E | ✅ Complete |
 | 5 | ZModem receive — CRC-16, CRC-32 fallback, IA file output | ⚠️ In progress |
 | 6 | CP437 font — full 256-character set, ANSI art rendering | ✅ Complete |
-| 7 | Per-character ANSI colour (G2 mode, 40 columns) | 🔲 Planned |
+| 7 | Per-character ANSI colour (G2 mode, 40 columns) | 🔄 In Progress |
 | 8 | 40-column build for stock TMS9918A (no F18A required) | ✅ Complete |
 
 ---
