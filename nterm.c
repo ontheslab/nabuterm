@@ -87,9 +87,10 @@ static void _load_font(void)
     uint8_t ci;
     vdp_loadASCIIFont(ASCII);
 #ifdef VDP_G2COL
-    /* With splitThirds=true the pattern generator is split into three 2048-byte
-     * banks (rows 0-7, 8-15, 16-23).  vdp_loadASCIIFont only writes to bank 0;
-     * we must copy the same data into banks 1 and 2 manually. */
+    /* In splitThirds mode the chip has three separate character shape tables,
+     * one per 8-row band.  vdp_loadASCIIFont() only fills the first one, so
+     * text would show garbage glyphs in rows 8-23 without this copy.
+     * We duplicate the same font data into the second and third tables here. */
     {
         const uint8_t *src;
         const uint8_t *end;
@@ -102,7 +103,8 @@ static void _load_font(void)
         do { IO_VDPDATA = *src; src++; } while (src != end);
     }
 #endif
-    /* vdp_loadPatternToId already writes to all 3 banks when splitThirds=true. */
+    /* vdp_loadPatternToId() fills all three shape tables automatically when
+     * splitThirds is active, so the CP437 extended characters need no extra work. */
     for (ci = 0u; ci < 128u; ci++)
         vdp_loadPatternToId(0x80u + ci,
             (uint8_t *)CP437_EXT + (uint16_t)ci * 8u);

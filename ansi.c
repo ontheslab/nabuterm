@@ -14,9 +14,11 @@
  * Builds:
  *   VDP_G2COL (default, stock NABU): 80-column virtual buffer, 32-column
  *   visible viewport.  Per-character colour via direct VRAM writes.
- *   Hardware note: the TMS9918A G2 colour table is indexed by pattern ID.
- *   With splitThirds=true the screen is divided into three 8-row bands, each
- *   with its own colour table, giving 3x the colour independence.
+ *   Hardware note: the TMS9918A colour table is keyed by character code, not
+ *   screen position -- every cell showing the same character gets the same
+ *   colour.  splitThirds divides the screen into three independent 8-row
+ *   bands (rows 0-7, 8-15, 16-23), each with its own colour table, so the
+ *   same character can appear in different colours in different screen thirds.
  *
  *   VDP_80COL (F18A 80-column): direct VDP writes, global colour register.
  */
@@ -73,11 +75,13 @@ static uint8_t _vbuf_col[24][80];  /* packed colour: (fg<<4)|bg           */
 static uint8_t _log_x;             /* logical cursor column  0-79         */
 static uint8_t _log_y;             /* logical cursor row     0-23         */
 static uint8_t _vp_x;              /* viewport left column   0-48         */
-/* Pre-computed colour per pattern ID per band for the render passes.
- * _vp_col[band][pattern_id] stores packed (fg<<4)|bg.
- * Three bands correspond to rows 0-7, 8-15, 16-23 (splitThirds layout).
- * Built by pass 1 of ansi_render_viewport(); used by pass 2.
- * Kept as a static (not stack) to avoid ~768 bytes of Z80 stack pressure. */
+/* Colour to use for each character code in each screen band.
+ * _vp_col[band][char_code] holds the packed colour byte (fg<<4)|bg.
+ * The three bands cover rows 0-7, 8-15, and 16-23 (splitThirds layout);
+ * each band has its own independent colour table so the same character
+ * can be green in the top third and white in the middle third, for example.
+ * Rebuilt each render by pass 1; used by pass 2 to write VRAM.
+ * Static (not a local variable) to keep ~768 bytes off the Z80 stack. */
 static uint8_t _vp_col[3][256];
 
 /* Bit array: which pattern IDs are present in each band's viewport slice.
@@ -155,21 +159,27 @@ static void _vbuf_scroll_up(void)
 
 /* Render the full 32x24 viewport from the virtual buffer to the VDP.
  *
- * Three-pass approach to eliminate colour flash with splitThirds=true.
- * The screen is divided into three 8-row bands, each with an independent
- * colour table in VRAM (at offsets 0, 2048, 4096 from _vdpColorTableAddr).
+ * The TMS9918A colour table is keyed by character code, not screen position
+ * -- all cells showing the same character share one colour entry per band.
+ * With splitThirds=true the chip provides three independent colour tables,
+ * one per 8-row band, stored at offsets 0, 2048, and 4096 in VRAM.
  *
- *   Pass 1 (CPU only)  -- build _vp_col[band][]: final colour per pattern ID
- *                         per band.  Last-write-wins within each band row
- *                         range.  Three independent tables eliminate the
- *                         colour conflict when the same char appears in
- *                         different colours on different screen sections.
- *   Pass 2 (VRAM)      -- write each band's colour table in one sequential
- *                         2048-byte burst (256 patterns * 8 bytes each).
- *                         Only 3 vdp_setWriteAddress calls total.
- *                         VBlank sync before first write reduces tearing.
- *   Pass 3 (VRAM)      -- update name table.  No colour changes during this
- *                         pass so no per-character colour flash is visible.
+ * Three passes are used to avoid visible colour flash:
+ *
+ *   Pass 1 (CPU only)  -- scan the viewport and decide the final colour for
+ *                         each character code in each band.  If the same
+ *                         character appears at two different colours within a
+ *                         band, the last one scanned wins (unavoidable --
+ *                         the hardware allows only one colour per code per
+ *                         band).  Also records which codes are actually on
+ *                         screen so pass 2 can skip the rest.
+ *   Pass 2 (VRAM)      -- write colour table entries to VRAM, but only for
+ *                         character codes that actually appear in the viewport.
+ *                         All colour writes happen before any character is
+ *                         redrawn, so colours are stable when pass 3 runs.
+ *                         Syncs to VBlank first to reduce screen tearing.
+ *   Pass 3 (VRAM)      -- write the name table (which character goes where).
+ *                         Colours are already set, so no flash is visible.
  */
 void ansi_render_viewport(void)
 {
