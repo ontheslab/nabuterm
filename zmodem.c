@@ -538,8 +538,10 @@ static uint8_t _rxzfile(void)
  * The caller writes _zwr to the file AFTER this function returns
  * success, so no HCCA file traffic occurs while bytes are arriving.
  *
- * Returns the terminator byte (_ZCRCE/_ZCRCG/_ZCRCQ/_ZCRCW),
- * or 0xFF on timeout, CRC error, or buffer overflow.
+ * Returns the terminator byte (_ZCRCE/_ZCRCG/_ZCRCQ/_ZCRCW) on success,
+ * 0xFE if the sub-packet exceeded the 1024-byte buffer but was drained
+ * cleanly to the terminator (caller should ZRPOS; do not close file),
+ * or 0xFF on timeout, CRC error, or disconnect.
  * --------------------------------------------------------------------- */
 static uint8_t _rxdata(void)
 {
@@ -576,8 +578,30 @@ static uint8_t _rxdata(void)
             return term;
         }
 
-        /* Guard against sub-packets larger than our buffer */
-        if (_zwrlen >= 1024u) { _zdbg_rxfail = 'O'; return 0xFF; }
+        /* Sub-packet exceeds our 1024-byte buffer.
+         * Drain the remainder to re-sync the stream, then return 0xFE.
+         * The caller sends ZRPOS; AmiExpress halves its block_size on
+         * each ZRPOS and will eventually reach <= 1024 bytes/sub-packet.
+         * Do NOT close the file -- the data written so far is still good. */
+        if (_zwrlen >= 1024u) {
+            _zdbg_rxfail = 'O';
+            for (;;) {
+                b = _rxzd();
+                if (b < 0) return 0xFF;
+                if (b > (int16_t)0xFF) {
+                    /* Terminator found: drain CRC bytes and return */
+                    if (_zcrc32) {
+                        if (_rxzd() < 0 || _rxzd() < 0 ||
+                            _rxzd() < 0 || _rxzd() < 0)
+                            return 0xFF;
+                    } else {
+                        if (_rxzd() < 0 || _rxzd() < 0) return 0xFF;
+                    }
+                    return 0xFE;  /* drained cleanly -- caller sends ZRPOS */
+                }
+                /* discard data byte; caller will restore _zfpos */
+            }
+        }
         dat = (uint8_t)b;
         crc = _crc16(crc, dat);
         _zwr[_zwrlen++] = dat;
@@ -774,32 +798,46 @@ void zmodem_receive(uint8_t tcpHandle, uint8_t *pre, uint8_t prelen)
             }
             _zdat_frames++;
             ttype = '?';
-            for (;;) {
-                term = _rxdata();
-                if (term == 0xFF) {
-                    /* Timeout, CRC error, or buffer overflow */
-                    ttype = _zdbg_rxfail;   /* O/T/C/K instead of '!' */
-                    _zwrlen = 0;
-                    rn_fileHandleClose(fh);
-                    fh = 0xFF;
-                    _txzhex(_ZNAK, 0, 0, 0, 0);
-                    break;
-                }
-                /* CRC verified -- write this sub-packet to file now.
-                 * Doing it here (not inside _rxdata) means no HCCA file
-                 * traffic occurs while TCP bytes are being received.    */
-                _wrflush(fh);
-                if (term == _ZCRCQ) {
-                    ttype = 'q';
-                    _txpos(_ZACK, _zfpos);
-                }
-                if (term == _ZCRCE || term == _ZCRCW) {
-                    ttype = (term == _ZCRCE) ? 'e' : 'w';
-                    if (term == _ZCRCW)
+            {
+                uint32_t pkt_start;
+                for (;;) {
+                    pkt_start = _zfpos;
+                    term = _rxdata();
+                    if (term == 0xFEu) {
+                        /* Sub-packet too large: _rxdata() drained it.
+                         * Restore _zfpos and send ZRPOS -- AmiExpress
+                         * will halve its block_size and retransmit. */
+                        _zfpos  = pkt_start;
+                        _zwrlen = 0;
+                        _txpos(_ZRPOS, _zfpos);
+                        ttype = 'O';
+                        break;
+                    }
+                    if (term == 0xFF) {
+                        /* Timeout, CRC error, or disconnect */
+                        ttype = _zdbg_rxfail;
+                        _zwrlen = 0;
+                        rn_fileHandleClose(fh);
+                        fh = 0xFF;
+                        _txzhex(_ZNAK, 0, 0, 0, 0);
+                        break;
+                    }
+                    /* CRC verified -- write this sub-packet to file now.
+                     * Doing it here (not inside _rxdata) means no HCCA file
+                     * traffic occurs while TCP bytes are being received.    */
+                    _wrflush(fh);
+                    if (term == _ZCRCQ) {
+                        ttype = 'q';
                         _txpos(_ZACK, _zfpos);
-                    break;
+                    }
+                    if (term == _ZCRCE || term == _ZCRCW) {
+                        ttype = (term == _ZCRCE) ? 'e' : 'w';
+                        if (term == _ZCRCW)
+                            _txpos(_ZACK, _zfpos);
+                        break;
+                    }
+                    ttype = 'g';  /* _ZCRCG: data continues, no ACK */
                 }
-                ttype = 'g';  /* _ZCRCG: data continues, no ACK */
             }
             /* Update the in-place progress line AFTER the frame completes
              * so we see the final byte position and what ended the frame */
