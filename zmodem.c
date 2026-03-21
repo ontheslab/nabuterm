@@ -39,6 +39,8 @@
 #define _ZCRCG  0x69   /* go on, no ACK needed        */
 #define _ZCRCQ  0x6A   /* go on, ZACK expected        */
 #define _ZCRCW  0x6B   /* end of frame, ZACK expected */
+#define _ZRUB0  0x6C   /* escaped 0x7F               */
+#define _ZRUB1  0x6D   /* escaped 0xFF               */
 
 /* ZRINIT capability flags we advertise */
 #define _CANFDX   0x01
@@ -218,8 +220,27 @@ static int16_t _rxzd(void)
     case _ZCRCG: return (int16_t)0x101;
     case _ZCRCQ: return (int16_t)0x102;
     case _ZCRCW: return (int16_t)0x103;
+    case _ZRUB0: return (int16_t)0x7F;
+    case _ZRUB1: return (int16_t)0xFF;
     default:     return (int16_t)((uint8_t)b ^ 0x40u);
     }
+}
+
+static uint8_t _rx_crc16(uint16_t *out)
+{
+    int16_t  b;
+    uint16_t crc;
+
+    b = _rxzd();
+    if (b < 0 || b > (int16_t)0xFF) return 0u;
+    crc = (uint16_t)(((uint16_t)(uint8_t)b) << 8);
+
+    b = _rxzd();
+    if (b < 0 || b > (int16_t)0xFF) return 0u;
+    crc |= (uint8_t)b;
+
+    *out = crc;
+    return 1u;
 }
 
 /* -----------------------------------------------------------------------
@@ -251,6 +272,14 @@ static void _txzhex(uint8_t type,
     _txb(_nib((uint8_t)(crc      )));
     _txb('\r'); _txb('\n');
     _txflush();
+}
+
+static void _txpos(uint8_t type, uint32_t pos)
+{
+    uint8_t *pp;
+
+    pp = (uint8_t *)&pos;
+    _txzhex(type, pp[0], pp[1], pp[2], pp[3]);
 }
 
 /* -----------------------------------------------------------------------
@@ -316,16 +345,13 @@ static uint8_t _rxhdr(void)
         /* ZBIN: 5 ZDLE-decoded bytes, then 2 ZDLE-decoded CRC bytes.
          * Some senders use CRC-32 (4 bytes) with the ZBIN 'A' marker;
          * if CRC-16 fails but the type byte is valid, consume the extra
-         * 2 CRC bytes and accept with CRC-32 fallback. */
+         * 2 CRC bytes and verify CRC-32 instead of accepting blindly. */
         for (i = 0u; i < 5u; i++) {
             b = _rxzd();
             if (b < 0 || b > (int16_t)0xFF) { _zdbg_hfail = 'B'; return 0xFF; }
             d[i] = (uint8_t)b;
         }
-        b = _rxzd(); if (b < 0 || b > (int16_t)0xFF) { _zdbg_hfail = 'B'; return 0xFF; }
-        rcrc = (uint16_t)(((uint16_t)(uint8_t)b) << 8);
-        b = _rxzd(); if (b < 0 || b > (int16_t)0xFF) { _zdbg_hfail = 'B'; return 0xFF; }
-        rcrc |= (uint8_t)b;
+        if (!_rx_crc16(&rcrc)) { _zdbg_hfail = 'B'; return 0xFF; }
         /* Pre-check CRC-16; if it fails and type is valid, assume CRC-32 */
         crc = 0u;
         for (i = 0u; i < 5u; i++) crc = _crc16(crc, d[i]);
@@ -345,13 +371,13 @@ static uint8_t _rxhdr(void)
 
     } else if (htype == 0x43u) {
         /* ZBIN32 ('C'): 5 ZDLE-decoded bytes, then 4 ZDLE-decoded CRC-32 bytes.
-         * CRC-32 not verified (no table on Z80); accept if type is valid. */
+         * CRC-32 is still not verified here; we only consume it and sync. */
         for (i = 0u; i < 5u; i++) {
             b = _rxzd();
             if (b < 0 || b > (int16_t)0xFF) { _zdbg_hfail = 'B'; return 0xFF; }
             d[i] = (uint8_t)b;
         }
-        _rxzd(); _rxzd(); _rxzd(); _rxzd();  /* consume 4 CRC-32 bytes */
+        _rxzd(); _rxzd(); _rxzd(); _rxzd();
         if (d[0] > (uint8_t)_ZFERR) { _zdbg_hfail = 'U'; return 0xFF; }
         _zdbg_hfail = 'K';
         _zcrc32     = 1;
@@ -386,12 +412,20 @@ static uint8_t _rxhdr(void)
 static void _drain_subpkt(void)
 {
     int16_t b;
+
     for (;;) {
         b = _rxzd();
         if (b < 0 || b > (int16_t)0xFF) break;
     }
-    _rxzd(); _rxzd();                      /* discard CRC bytes 1 & 2 */
-    if (_zcrc32) { _rxzd(); _rxzd(); }    /* discard CRC bytes 3 & 4 */
+    if (_zcrc32) {
+        _rxzd();
+        _rxzd();
+        _rxzd();
+        _rxzd();
+    } else {
+        _rxzd();
+        _rxzd();
+    }
 }
 
 /* -----------------------------------------------------------------------
@@ -431,14 +465,11 @@ static uint8_t _rxzfile(void)
             /* Sub-packet terminator */
             term = (uint8_t)((uint16_t)b - 0x100u + _ZCRCE);
             crc  = _crc16(crc, term);
-            /* Read 2 ZDLE-decoded CRC bytes */
-            b = _rxzd(); if (b < 0 || b > (int16_t)0xFF) return 1;
-            rcrc = (uint16_t)(((uint16_t)(uint8_t)b) << 8);
-            b = _rxzd(); if (b < 0 || b > (int16_t)0xFF) return 1;
-            rcrc |= (uint8_t)b;
-            if (crc != rcrc) {
-                /* CRC-32 fallback: consume extra 2 bytes and accept */
-                if (!_zcrc32 || _rxzd() < 0 || _rxzd() < 0) return 1;
+            if (_zcrc32) {
+                if (_rxzd() < 0 || _rxzd() < 0 || _rxzd() < 0 || _rxzd() < 0)
+                    return 1;
+            } else {
+                if (!_rx_crc16(&rcrc) || crc != rcrc) return 1;
             }
             break;
         }
@@ -457,7 +488,7 @@ static uint8_t _rxzfile(void)
     }
 
     if (!fname_done)
-        _zfname[fi <= (uint8_t)ZM_FNAME_MAX ? fi : (uint8_t)ZM_FNAME_MAX] = 0;
+        _zfname[fi] = 0;
 
     return 0;
 }
@@ -484,16 +515,12 @@ static uint8_t _rxdata(uint8_t fh)
             /* Terminator: include terminator byte itself in CRC */
             term = (uint8_t)((uint16_t)b - 0x100u + _ZCRCE);
             crc  = _crc16(crc, term);
-            /* Read 2 ZDLE-decoded CRC bytes */
-            b = _rxzd(); if (b < 0 || b > (int16_t)0xFF) return 0xFF;
-            rcrc = (uint16_t)(((uint16_t)(uint8_t)b) << 8);
-            b = _rxzd(); if (b < 0 || b > (int16_t)0xFF) return 0xFF;
-            rcrc |= (uint8_t)b;
-            if (crc != rcrc) {
-                /* CRC-32 fallback: consume extra 2 bytes and accept */
-                if (!_zcrc32 || _rxzd() < 0 || _rxzd() < 0) return 0xFF;
+            if (_zcrc32) {
+                if (_rxzd() < 0 || _rxzd() < 0 || _rxzd() < 0 || _rxzd() < 0)
+                    return 0xFF;
+            } else {
+                if (!_rx_crc16(&rcrc) || crc != rcrc) return 0xFF;
             }
-            _wrflush(fh);
             return term;
         }
 
@@ -521,6 +548,7 @@ void zmodem_receive(uint8_t tcpHandle, uint8_t *pre, uint8_t prelen)
     uint8_t  done;
     uint8_t  fname_len;
     int32_t  ds;
+    uint32_t eof_pos;
 
     _zhandle   = tcpHandle;
     /* Seed the receive buffer with any bytes already pulled from TCP
@@ -696,20 +724,12 @@ void zmodem_receive(uint8_t tcpHandle, uint8_t *pre, uint8_t prelen)
                 }
                 if (term == _ZCRCQ) {
                     /* Sender requests ACK, but transfer continues */
-                    _txzhex(_ZACK,
-                            (uint8_t)(_zfpos),
-                            (uint8_t)(_zfpos >> 8),
-                            (uint8_t)(_zfpos >> 16),
-                            (uint8_t)(_zfpos >> 24));
+                    _txpos(_ZACK, _zfpos);
                 }
                 if (term == _ZCRCE || term == _ZCRCW) {
                     /* End of this ZDATA frame */
                     if (term == _ZCRCW) {
-                        _txzhex(_ZACK,
-                                (uint8_t)(_zfpos),
-                                (uint8_t)(_zfpos >> 8),
-                                (uint8_t)(_zfpos >> 16),
-                                (uint8_t)(_zfpos >> 24));
+                        _txpos(_ZACK, _zfpos);
                     }
                     break;  /* wait for ZEOF or next ZDATA */
                 }
@@ -719,6 +739,14 @@ void zmodem_receive(uint8_t tcpHandle, uint8_t *pre, uint8_t prelen)
 
         case _ZEOF:
             /* File transfer complete */
+            eof_pos = (uint32_t)_zhdr[0]
+                    | ((uint32_t)_zhdr[1] << 8)
+                    | ((uint32_t)_zhdr[2] << 16)
+                    | ((uint32_t)_zhdr[3] << 24);
+            if (eof_pos != _zfpos) {
+                _txpos(_ZRPOS, _zfpos);
+                break;
+            }
             if (fh != 0xFF) {
                 _wrflush(fh);
                 rn_fileHandleClose(fh);

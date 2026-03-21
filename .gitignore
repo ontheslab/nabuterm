@@ -29,6 +29,9 @@ desktop.ini
 xfer_n.bat
 
 
+# Backup / old file copies
+*.old
+
 # Private development files — never publish these
 docs/
 DEVLOG.md
