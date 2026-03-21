@@ -49,8 +49,8 @@
 
 /* Timeout: rn_TCPHandleRead poll iterations before giving up.
  * Each poll is one HCCA round-trip (~540μs real time at 111Kbps).
- * 200000 × 540μs ≈ 108 seconds.  If this is hit _zdbg_got stays 0. */
-#define _ZTIMEOUT  200000u
+ * 20000 × 540μs ≈ 10 seconds.  If this is hit _zdbg_got stays 0. */
+#define _ZTIMEOUT  20000u
 
 /* -----------------------------------------------------------------------
  * Module state -- all static
@@ -64,14 +64,20 @@ static uint8_t  _zrxlen;            /* valid bytes in _zrx            */
 static uint8_t  _ztx[24];           /* TX staging (ZHEX frame = 20 B) */
 static uint8_t  _ztxlen;
 
-static uint8_t  _zwr[128];          /* file write buffer              */
-static uint8_t  _zwrlen;
+static uint8_t  _zwr[1024];         /* sub-packet buffer -- holds one full
+                                     * sub-packet (up to 1024 bytes) in RAM
+                                     * so the file write happens AFTER CRC
+                                     * verification, not mid-reception     */
+static uint16_t _zwrlen;
 
 static uint8_t  _zhdr[4];           /* last received header data[0-3] */
 
 static uint8_t  _zfname[ZM_FNAME_MAX + 1];
 static uint32_t _zfpos;             /* bytes written to current file  */
 static uint8_t  _zcrc32;            /* 1 = sender using CRC-32 frames */
+
+static uint8_t  _zdat_row;          /* VDP row of the ZDATA progress line */
+static uint16_t _zdat_frames;       /* count of ZDATA frames received     */
 
 static uint16_t _zcrc[256];         /* CRC-16 CCITT lookup table      */
 
@@ -114,6 +120,9 @@ static uint8_t  _zdbg_hfail;  /* _rxhdr failure code:
                                 *  'C'=CRC mismatch,     'B'=ZBIN parse */
 static uint16_t _zdbg_crc_c;  /* CRC we computed  (on CRC mismatch)    */
 static uint16_t _zdbg_crc_r;  /* CRC we received  (on CRC mismatch)    */
+static uint8_t  _zdbg_rxfail; /* _rxdata() fail code:
+                                *  'O'=overflow, 'T'=timeout,
+                                *  'C'=CRC mismatch, 'K'=CRC read fail  */
 
 /* Read one raw byte from TCP stream.
  * Refills _zrx from TCP when the buffer is empty.
@@ -206,23 +215,36 @@ static void _zphex(uint8_t v)
  *         0x102          : _ZCRCQ terminator
  *         0x103          : _ZCRCW terminator
  *         -1             : timeout or disconnect
+ *
+ * XON (0x11), XOFF (0x13) and high-bit variants (0x91, 0x93) are
+ * discarded.  XPRZ escapes actual file data containing these bytes,
+ * so any raw XON/XOFF in the stream is protocol-level flow control.
+ * XPRZ's zshhdr() sends XON after every ZHEX header to uncork the
+ * receiver; without this skip the XON leaks into _rxdata() as a
+ * spurious first data byte and causes a buffer overflow at byte 1024.
  * --------------------------------------------------------------------- */
 static int16_t _rxzd(void)
 {
     int16_t b;
-    b = _rxb();
-    if (b < 0) return -1;
-    if ((uint8_t)b != _ZD) return b;
-    b = _rxb();
-    if (b < 0) return -1;
-    switch ((uint8_t)b) {
-    case _ZCRCE: return (int16_t)0x100;
-    case _ZCRCG: return (int16_t)0x101;
-    case _ZCRCQ: return (int16_t)0x102;
-    case _ZCRCW: return (int16_t)0x103;
-    case _ZRUB0: return (int16_t)0x7F;
-    case _ZRUB1: return (int16_t)0xFF;
-    default:     return (int16_t)((uint8_t)b ^ 0x40u);
+    for (;;) {
+        b = _rxb();
+        if (b < 0) return -1;
+        /* Discard XON/XOFF flow-control bytes -- not data content */
+        if ((uint8_t)b == 0x11u || (uint8_t)b == 0x13u ||
+            (uint8_t)b == 0x91u || (uint8_t)b == 0x93u)
+            continue;
+        if ((uint8_t)b != _ZD) return b;
+        b = _rxb();
+        if (b < 0) return -1;
+        switch ((uint8_t)b) {
+        case _ZCRCE: return (int16_t)0x100;
+        case _ZCRCG: return (int16_t)0x101;
+        case _ZCRCQ: return (int16_t)0x102;
+        case _ZCRCW: return (int16_t)0x103;
+        case _ZRUB0: return (int16_t)0x7F;
+        case _ZRUB1: return (int16_t)0xFF;
+        default:     return (int16_t)((uint8_t)b ^ 0x40u);
+        }
     }
 }
 
@@ -280,6 +302,11 @@ static void _txpos(uint8_t type, uint32_t pos)
 
     pp = (uint8_t *)&pos;
     _txzhex(type, pp[0], pp[1], pp[2], pp[3]);
+    /* ZModem spec: ZACK and ZRPOS must be followed by XON (0x11) to
+     * re-enable the sender's transmitter after a ZCRCW checkpoint.
+     * Without it the sender counts each checkpoint as an error. */
+    _txb(0x11u);
+    _txflush();
 }
 
 /* -----------------------------------------------------------------------
@@ -494,42 +521,56 @@ static uint8_t _rxzfile(void)
 }
 
 /* -----------------------------------------------------------------------
- * _rxdata -- receive one data sub-packet and write bytes to file
+ * _rxdata -- receive one data sub-packet into _zwr[], verify CRC.
+ *
+ * Data is buffered in RAM only -- no file write happens here.
+ * The caller writes _zwr to the file AFTER this function returns
+ * success, so no HCCA file traffic occurs while bytes are arriving.
  *
  * Returns the terminator byte (_ZCRCE/_ZCRCG/_ZCRCQ/_ZCRCW),
- * or 0xFF on timeout or CRC error.
+ * or 0xFF on timeout, CRC error, or buffer overflow.
  * --------------------------------------------------------------------- */
-static uint8_t _rxdata(uint8_t fh)
+static uint8_t _rxdata(void)
 {
     int16_t  b;
     uint8_t  dat, term;
     uint16_t crc, rcrc;
 
     crc = 0u;
+    _zdbg_rxfail = '?';
 
     for (;;) {
         b = _rxzd();
-        if (b < 0) return 0xFF;
+        if (b < 0) { _zdbg_rxfail = 'T'; return 0xFF; }
 
         if (b > (int16_t)0xFF) {
             /* Terminator: include terminator byte itself in CRC */
             term = (uint8_t)((uint16_t)b - 0x100u + _ZCRCE);
             crc  = _crc16(crc, term);
             if (_zcrc32) {
-                if (_rxzd() < 0 || _rxzd() < 0 || _rxzd() < 0 || _rxzd() < 0)
-                    return 0xFF;
+                if (_rxzd() < 0 || _rxzd() < 0 || _rxzd() < 0 || _rxzd() < 0) {
+                    _zdbg_rxfail = 'K'; return 0xFF;
+                }
             } else {
-                if (!_rx_crc16(&rcrc) || crc != rcrc) return 0xFF;
+                if (!_rx_crc16(&rcrc)) {
+                    _zdbg_rxfail = 'K'; return 0xFF;
+                }
+                if (crc != rcrc) {
+                    _zdbg_rxfail = 'C';
+                    _zdbg_crc_c  = crc;
+                    _zdbg_crc_r  = rcrc;
+                    return 0xFF;
+                }
             }
             return term;
         }
 
+        /* Guard against sub-packets larger than our buffer */
+        if (_zwrlen >= 1024u) { _zdbg_rxfail = 'O'; return 0xFF; }
         dat = (uint8_t)b;
         crc = _crc16(crc, dat);
         _zwr[_zwrlen++] = dat;
         _zfpos++;
-        if (_zwrlen >= 128u)
-            _wrflush(fh);
     }
 }
 
@@ -547,6 +588,7 @@ void zmodem_receive(uint8_t tcpHandle, uint8_t *pre, uint8_t prelen)
     uint8_t  term;
     uint8_t  done;
     uint8_t  fname_len;
+    uint8_t  ttype;      /* last sub-packet terminator: e/g/q/w/! */
     int32_t  ds;
     uint32_t eof_pos;
 
@@ -577,8 +619,11 @@ void zmodem_receive(uint8_t tcpHandle, uint8_t *pre, uint8_t prelen)
     _zdbg_hfail  = '?';
     _zdbg_crc_c  = 0u;
     _zdbg_crc_r  = 0u;
+    _zdbg_rxfail = '?';
     _zlast_wr    = 0;
     _zcrc32      = 0;
+    _zdat_row    = 0xFF;
+    _zdat_frames = 0u;
     _crc_init();
 
     vdp_clearScreen();
@@ -589,8 +634,10 @@ void zmodem_receive(uint8_t tcpHandle, uint8_t *pre, uint8_t prelen)
     _znl();
     vdp_setTextColor(VDP_WHITE, VDP_BLACK);
 
-    /* Advertise capabilities in ZF0 (= ZP0 = d0); omit CANFC32 for CRC-16 */
-    _txzhex(_ZRINIT, _CANFDX | _CANOVIO, 0, 0, 0);
+    /* d0=Rxbuflen low, d1=Rxbuflen high (1024), d2=0, d3=ZF0 flags.
+     * Rxbuflen = d0 + d1*256.  lrzsz rejects Rxbuflen < 32 and falls
+     * back to 8192, so flags must be in d3 (ZF0), not d0. */
+    _txzhex(_ZRINIT, 0, 4u, 0, _CANFDX | _CANOVIO);
 
     /* Check TCP state and write result after sending ZRINIT */
     ds = rn_TCPHandleSize(_zhandle);
@@ -605,11 +652,15 @@ void zmodem_receive(uint8_t tcpHandle, uint8_t *pre, uint8_t prelen)
     while (!done) {
         ftype = _rxhdr();
 
-        vdp_setTextColor(VDP_GRAY, VDP_BLACK);
-        vdp_print((uint8_t *)"hdr=");
-        _zphex(ftype);
-        _znl();
-        vdp_setTextColor(VDP_WHITE, VDP_BLACK);
+        /* Print header type for everything except ZDATA -- ZDATA uses
+         * an in-place progress line so it does not scroll the screen */
+        if (ftype != _ZDATA) {
+            vdp_setTextColor(VDP_GRAY, VDP_BLACK);
+            vdp_print((uint8_t *)"hdr=");
+            _zphex(ftype);
+            _znl();
+            vdp_setTextColor(VDP_WHITE, VDP_BLACK);
+        }
 
         if (ftype == 0xFF) {
             vdp_setTextColor(VDP_LIGHT_RED, VDP_BLACK);
@@ -644,7 +695,7 @@ void zmodem_receive(uint8_t tcpHandle, uint8_t *pre, uint8_t prelen)
 
         case _ZRQINIT:
             /* Sender retrying init -- resend our capabilities */
-            _txzhex(_ZRINIT, _CANFDX | _CANOVIO, 0, 0, 0);
+            _txzhex(_ZRINIT, 0, 4u, 0, _CANFDX | _CANOVIO);
             break;
 
         case _ZSINIT:
@@ -681,7 +732,8 @@ void zmodem_receive(uint8_t tcpHandle, uint8_t *pre, uint8_t prelen)
                  fname_len++)
                 ;
             /* Open / create file then truncate to 0 bytes */
-            fh = rn_fileOpen(fname_len, _zfname, OPEN_FILE_FLAG_READWRITE, 0xFF);
+            /* Use handle 2 -- TCP is on handle 1, must not share */
+            fh = rn_fileOpen(fname_len, _zfname, OPEN_FILE_FLAG_READWRITE, 2u);
             vdp_setTextColor(VDP_GRAY, VDP_BLACK);
             vdp_print((uint8_t *)"open=");
             vdp_write(fh != 0xFF ? 'Y' : 'N');
@@ -707,42 +759,88 @@ void zmodem_receive(uint8_t tcpHandle, uint8_t *pre, uint8_t prelen)
                 _txzhex(_ZNAK, 0, 0, 0, 0);
                 break;
             }
+            _zdat_frames++;
+            ttype = '?';
             for (;;) {
-                term = _rxdata(fh);
+                term = _rxdata();
                 if (term == 0xFF) {
-                    /* Error (CRC mismatch or timeout) -- abort */
-                    vdp_setTextColor(VDP_LIGHT_RED, VDP_BLACK);
-                    vdp_print((uint8_t *)"dat! p=");
-                    _zphex((uint8_t)(_zfpos >> 8));
-                    _zphex((uint8_t)_zfpos);
-                    _znl();
-                    vdp_setTextColor(VDP_WHITE, VDP_BLACK);
+                    /* Timeout, CRC error, or buffer overflow */
+                    ttype = _zdbg_rxfail;   /* O/T/C/K instead of '!' */
+                    _zwrlen = 0;
                     rn_fileHandleClose(fh);
                     fh = 0xFF;
                     _txzhex(_ZNAK, 0, 0, 0, 0);
                     break;
                 }
+                /* CRC verified -- write this sub-packet to file now.
+                 * Doing it here (not inside _rxdata) means no HCCA file
+                 * traffic occurs while TCP bytes are being received.    */
+                _wrflush(fh);
                 if (term == _ZCRCQ) {
-                    /* Sender requests ACK, but transfer continues */
+                    ttype = 'q';
                     _txpos(_ZACK, _zfpos);
                 }
                 if (term == _ZCRCE || term == _ZCRCW) {
-                    /* End of this ZDATA frame */
-                    if (term == _ZCRCW) {
+                    ttype = (term == _ZCRCE) ? 'e' : 'w';
+                    if (term == _ZCRCW)
                         _txpos(_ZACK, _zfpos);
-                    }
-                    break;  /* wait for ZEOF or next ZDATA */
+                    break;
                 }
-                /* _ZCRCG: data continues, no ACK needed */
+                ttype = 'g';  /* _ZCRCG: data continues, no ACK */
             }
+            /* Update the in-place progress line AFTER the frame completes
+             * so we see the final byte position and what ended the frame */
+            if (_zdat_row == 0xFF) {
+                _zdat_row = vdp_cursor.y;
+            } else {
+                vdp_setCursor2(0, _zdat_row);
+            }
+            vdp_setTextColor(VDP_GRAY, VDP_BLACK);
+            vdp_print((uint8_t *)"dat f=");
+            _zphex((uint8_t)(_zdat_frames >> 8));
+            _zphex((uint8_t)_zdat_frames);
+            vdp_print((uint8_t *)" p=");
+            _zphex((uint8_t)(_zfpos >> 24));
+            _zphex((uint8_t)(_zfpos >> 16));
+            _zphex((uint8_t)(_zfpos >> 8));
+            _zphex((uint8_t)_zfpos);
+            vdp_print((uint8_t *)" t=");
+            vdp_write(ttype);
+            _znl();
+            if (ttype == 'C') {
+                vdp_setTextColor(VDP_LIGHT_RED, VDP_BLACK);
+                vdp_print((uint8_t *)"crc c=");
+                _zphex((uint8_t)(_zdbg_crc_c >> 8));
+                _zphex((uint8_t)_zdbg_crc_c);
+                vdp_print((uint8_t *)" r=");
+                _zphex((uint8_t)(_zdbg_crc_r >> 8));
+                _zphex((uint8_t)_zdbg_crc_r);
+                _znl();
+            }
+            vdp_setTextColor(VDP_WHITE, VDP_BLACK);
             break;
 
         case _ZEOF:
-            /* File transfer complete */
+            /* File transfer complete -- verify sender's file size matches ours */
             eof_pos = (uint32_t)_zhdr[0]
                     | ((uint32_t)_zhdr[1] << 8)
                     | ((uint32_t)_zhdr[2] << 16)
                     | ((uint32_t)_zhdr[3] << 24);
+            vdp_setTextColor(VDP_GRAY, VDP_BLACK);
+            vdp_print((uint8_t *)"eof s=");
+            _zphex((uint8_t)(eof_pos >> 24));
+            _zphex((uint8_t)(eof_pos >> 16));
+            _zphex((uint8_t)(eof_pos >>  8));
+            _zphex((uint8_t) eof_pos);
+            vdp_print((uint8_t *)" l=");
+            _zphex((uint8_t)(_zfpos >> 24));
+            _zphex((uint8_t)(_zfpos >> 16));
+            _zphex((uint8_t)(_zfpos >>  8));
+            _zphex((uint8_t) _zfpos);
+            vdp_print((uint8_t *)" ");
+            vdp_write(eof_pos == _zfpos ? 'Y' : 'N');
+            _znl();
+            vdp_setTextColor(VDP_WHITE, VDP_BLACK);
             if (eof_pos != _zfpos) {
                 _txpos(_ZRPOS, _zfpos);
                 break;
@@ -757,7 +855,7 @@ void zmodem_receive(uint8_t tcpHandle, uint8_t *pre, uint8_t prelen)
                 vdp_setTextColor(VDP_WHITE, VDP_BLACK);
             }
             /* Ready for another file */
-            _txzhex(_ZRINIT, _CANFDX | _CANOVIO, 0, 0, 0);
+            _txzhex(_ZRINIT, 0, 4u, 0, _CANFDX | _CANOVIO);
             break;
 
         case _ZFIN:

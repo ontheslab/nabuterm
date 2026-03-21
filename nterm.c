@@ -1,6 +1,6 @@
 /*
  * NABU BBS Telnet Terminal
- * v1.01.01 -- Ctrl+T colour cycle (80-col); SYM key help overlay (both)
+ * v1.01.02 -- ZModem: skip XON/XOFF in data stream (XPRZ zshhdr fix)
  *
  * Build G2 colour (stock):  zcc +nabu ...             nterm.c -o NABUTERM
  * Build 80-col (F18A):      zcc +nabu ... -DVDP_80COL nterm.c -o NABUTERM80
@@ -145,7 +145,7 @@ void main(void)
         vdp_clearScreen();
         vdp_setCursor2(0, 0);
         vdp_setTextColor(VDP_CYAN, VDP_BLACK);
-        vdp_print((uint8_t *)"NABU BBS Terminal  v1.01.01");
+        vdp_print((uint8_t *)"NABU BBS Terminal  v1.01.02");
         nl();
         vdp_setTextColor(VDP_GRAY, VDP_BLACK);
         vdp_print((uint8_t *)"Connecting to: ");
@@ -154,7 +154,7 @@ void main(void)
         nl();
         vdp_setTextColor(VDP_WHITE, VDP_BLACK);
 
-        handle = rn_TCPOpen(_conn_host_len, _conn_host, _conn_port, 0xFF);
+        handle = rn_TCPOpen(_conn_host_len, _conn_host, _conn_port, 1u);
 
         if (handle == 0xFF) {
             /* Connection failed -- stay in text mode, show error, loop */
