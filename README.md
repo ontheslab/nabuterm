@@ -2,14 +2,12 @@
 
 An ANSI BBS telnet terminal for the [NABU Personal Computer](https://nabu.ca), written in C for the Z80.
 Connect to ANSI BBS systems over the RetroNET Internet Adapter, with full CP437 character set support,
-colour rendering, and ZModem file receive.
+per-character ANSI colour, and ZModem file receive.
 
 **Platform:** NABU PC (Z80, 64KB) · **Compiler:** z88dk + SDCC · **Binary type:** BIN_HOMEBREW
 
 ---
 
-> ⚠️ **Development Build**
->
 > Two binaries are produced from a single source. Choose the right one for your hardware:
 >
 > | Binary | Mode | Hardware |
@@ -25,12 +23,13 @@ colour rendering, and ZModem file receive.
 - **ANSI/VT100 parser** — cursor movement, SGR colours, erase sequences, save/restore cursor
 - **IBM CP437 font** — full 256-character set loaded at startup: printable ASCII, box-drawing,
   block graphics (░▒▓█) and extended characters for ANSI BBS art
+- **Per-character ANSI colour** — G2 splitThirds mode on the 40-column build gives true
+  per-character foreground and background colour on stock TMS9918A hardware
 - **Host preset menu** — five preset slots saved to `NBTERM.CFG` on the IA file store;
   editable in-session, survives restarts
-- **ZModem receive** *(implemented, not yet working)* — ZModem receive state machine with
-  CRC-16 and automatic CRC-32 fallback; currently timing out mid-transfer against real BBS
-  systems. Under active investigation.
-- **Reconnect loop** — returns to the main (preset) menu after each session.
+- **ZModem receive** — working receive implementation with CRC-16; tested against AmiExpress
+  and Mystic BBS systems on real NABU hardware. Received files written to the IA file store.
+- **Reconnect loop** — returns to the preset menu after each session ends
 
 ---
 
@@ -50,13 +49,15 @@ Z88DK_DIR=/c/z88dk ZCCCFG=/c/z88dk/lib/config PATH=/c/z88dk/bin:$PATH \
   nterm.c -o "NABUTERM.nabu"
 ```
 
-Output: `NABUTERM.nabu` (40-col stock) and `NABUTERM80.nabu` (80-col F18A), ~30 KB each
+Both targets are built from `nterm.c` alone — sub-modules are pulled in via `#include`.
+
+Output sizes: `NABUTERM.nabu` ~40 KB · `NABUTERM80.nabu` ~34 KB
 
 ---
 
 ## Usage
 
-Load `NABUTERM.nabu` on the NABU. The preset menu appears on startup.
+Load `NABUTERM.nabu` (or `NABUTERM80.nabu`) on the NABU. The preset menu appears on startup.
 
 ### Menu
 
@@ -73,9 +74,13 @@ Load `NABUTERM.nabu` on the NABU. The preset menu appears on startup.
 |-----|--------|
 | `CTRL-]` | Disconnect and return to menu |
 | `CTRL-E` | Toggle local echo override |
+| `CTRL-T` | Cycle text colour (80-column build) |
+| `SYM` | Show key reference overlay |
+| `←` / `→` | Scroll viewport 1 column (40-column build) |
+| `Pg←` / `Pg→` | Scroll viewport 8 columns (40-column build) |
 
-ZModem transfers start automatically when the BBS initiates one. Received files are saved to
-the IA file store under the filename provided by the sender - **Broken**.
+ZModem transfers start automatically when the BBS initiates one. The filename and size are
+shown on screen; received files are saved to the IA file store under the sender's filename.
 
 ---
 
@@ -83,9 +88,9 @@ the IA file store under the filename provided by the sender - **Broken**.
 
 | File | Description |
 |------|-------------|
-| `nterm.c` | Main entry point — init, reconnect loop, main telnet loop |
+| `nterm.c` | Main entry point — init, reconnect loop, main telnet/ZModem loop |
 | `telnet.c/h` | RFC 854 IAC state machine, option negotiation, server echo flag |
-| `ansi.c/h` | ANSI/VT100 escape sequence parser, ANSI colour sequence mapping, VDP output |
+| `ansi.c/h` | ANSI/VT100 escape sequence parser, colour mapping, VDP output, help overlay |
 | `zmodem.c/h` | ZModem receive state machine, CRC-16/32, IA file store output |
 | `menu.c/h` | Host preset menu, IA file-store persistence, line input |
 | `cp437_patterns.h` | IBM CP437 8×8 font — ASCII and extended character bitmaps |
@@ -100,28 +105,26 @@ the IA file store under the filename provided by the sender - **Broken**.
 | 1 | TCP skeleton — raw passthrough via RetroNET IA HCCA | ✅ Complete |
 | 2 | Telnet IAC state machine — ECHO, SGA, subnegotiation | ✅ Complete |
 | 3 | ANSI/VT100 escape sequence parser — cursor, colour, erase, SGR | ✅ Complete |
-| 4 | Host preset menu — IA file-store persistence, reconnect loop, CTRL-E | ✅ Complete |
-| 5 | ZModem receive — CRC-16, CRC-32 fallback, IA file output | ⚠️ In progress |
+| 4 | Host preset menu — IA file-store persistence, reconnect loop | ✅ Complete |
+| 5 | ZModem receive — CRC-16, IA file output | ✅ Complete |
 | 6 | CP437 font — full 256-character set, ANSI art rendering | ✅ Complete |
-| 7 | Per-character ANSI colour (G2 mode, 40 columns) | 🔄 In Progress |
-| 8 | 40-column build for stock TMS9918A (no F18A required) | ✅ Complete |
+| 7 | Per-character ANSI colour — G2 splitThirds mode, 40 columns | ✅ Complete |
+| 8 | Dual build — 40-col stock TMS9918A + 80-col F18A | ✅ Complete |
+| 9 | ZModem AmiExpress compatibility — telnet IAC fix, display | ✅ Complete |
 
 ---
 
 ## Known Limitations
 
-- **80-column mode requires F18A** — `NABUTERM80.nabu` uses an F18A extension and will not
+- **80-column mode requires F18A** — `NABUTERM80.nabu` uses F18A extensions and will not
   run on a stock TMS9918A. Use `NABUTERM.nabu` for stock hardware.
 
-- **Background colour** — TMS9918A TEXT80 mode uses a single global foreground/background
-  register. Per-character background colouring is not possible in this mode; all text renders
-  on a black background regardless of ANSI colour codes. A future G2-mode option would
-  address this at the cost of dropping from 80 to 40 columns.
+- **80-column background colour** — TMS9918A TEXT80 mode uses a single global
+  foreground/background register. Per-character background colouring is not possible in this
+  mode; all text renders on a black background regardless of ANSI colour codes.
+  The 40-column G2 build does not have this limitation.
 
-- **ZModem not yet working** — the receive state machine is implemented and partially functional
-  (headers parse, files open, data sub-packets receive) but transfers fail mid-session, likely
-  due to timing between the BBS sending ZDATA and ZEOF. Diagnostic VDP output is present in
-  this build to aid debugging. ZModem should not be relied upon for file transfers at this stage.
+- **ZModem send not implemented** — receive only. The NABU cannot initiate a ZModem upload.
 
 ---
 
@@ -133,8 +136,10 @@ via the RetroNET Internet Adapter.
 The CP437 font data is derived from the
 [SSD1306Ascii project](https://github.com/greiman/SSD1306Ascii/blob/master/src/fonts/cp437font8x8.h)
 by greiman (MIT licence). The ZModem implementation references
-[zmp by mecparts](https://github.com/mecparts/zmp) and the dctelnet autostart detector technique
-from [dctelnet by bruno-frederic](https://github.com/bruno-frederic/dctelnet).
+[zmp by Wayne Warthen](https://github.com/mecparts/zmp) (a CP/M ZModem for Z80) and uses the
+ZModem autostart detector technique from [dctelnet](https://github.com/bruno-frederic/dctelnet)
+by Bruno Frederic. AmiExpress sender behaviour was analysed from the
+[AmiExpress source](https://github.com/dmcoles/AmiExpress) by dmcoles.
 
 ---
 
