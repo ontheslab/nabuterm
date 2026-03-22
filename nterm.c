@@ -1,6 +1,6 @@
 /*
  * NABU BBS Telnet Terminal
- * v1.01.04 -- ZModem: drain oversized sub-packets and ZRPOS to shrink block_size
+ * v1.01.12 -- ZModem: AmiExpress protocol fixes, display cleanup, file size
  *
  * Build G2 colour (stock):  zcc +nabu ...             nterm.c -o NABUTERM
  * Build 80-col (F18A):      zcc +nabu ... -DVDP_80COL nterm.c -o NABUTERM80
@@ -30,6 +30,10 @@
 #include "../NABULIB/NABU-LIB.h"
 #include "../NABULIB/RetroNET-FileStore.h"
 #include "cp437_patterns.h"
+
+/* Single version string used by all sub-modules (adjacent string literals
+ * concatenate at compile time: "NABU BBS Terminal  " NABUTERM_VERSION). */
+#define NABUTERM_VERSION "v1.01.12"
 
 /* Sub-modules included directly -- single translation unit. */
 #include "telnet.c"
@@ -145,7 +149,7 @@ void main(void)
         vdp_clearScreen();
         vdp_setCursor2(0, 0);
         vdp_setTextColor(VDP_CYAN, VDP_BLACK);
-        vdp_print((uint8_t *)"NABU BBS Terminal  v1.01.04");
+        vdp_print((uint8_t *)"NABU BBS Terminal  " NABUTERM_VERSION);
         nl();
         vdp_setTextColor(VDP_GRAY, VDP_BLACK);
         vdp_print((uint8_t *)"Connecting to: ");

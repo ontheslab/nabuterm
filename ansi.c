@@ -388,7 +388,7 @@ void ansi_show_help(void)
     _help_put(30u, 8u, 0xBBu);
     /* Title row */
     _help_put(1u, 9u, 0xBAu);
-    _help_puts(2u, 9u, (uint8_t *)"   NABU Terminal  v1.01.01  ");
+    _help_puts(2u, 9u, (uint8_t *)"   NABU Terminal  " NABUTERM_VERSION "  ");
     _help_put(30u, 9u, 0xBAu);
     /* Separator */
     _help_put(1u, 10u, 0xCCu);
@@ -422,7 +422,7 @@ void ansi_show_help(void)
         /* Title */
         _help_put(19u, 10u, 0xBAu);
         _help_puts(20u, 10u,
-            (uint8_t *)"   NABU BBS Terminal  v1.01.01  F18A    ");
+            (uint8_t *)"   NABU BBS Terminal  " NABUTERM_VERSION "  F18A    ");
         _help_put(60u, 10u, 0xBAu);
         /* Separator */
         _help_put(19u, 11u, 0xCCu);
