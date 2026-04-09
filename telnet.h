@@ -17,13 +17,13 @@
 #define TN_DO    ((uint8_t)0xFD)
 #define TN_DONT  ((uint8_t)0xFE)
 
-/* Option codes we care about */
+/* Recognised option codes */
 #define TN_OPT_ECHO  ((uint8_t)1)
 #define TN_OPT_SGA   ((uint8_t)3)
 
 /*
- * Set to true when the server has said WILL ECHO (it echoes our input).
- * Set to false when server says WONT ECHO (we must echo locally).
+ * Set to true when the server has said WILL ECHO (server echoes all input).
+ * Set to false when server says WONT ECHO (local echo required).
  */
 extern bool tn_server_echo;
 

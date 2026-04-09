@@ -13,12 +13,12 @@
  *
  * Builds:
  *   VDP_G2COL (default, stock NABU): 80-column virtual buffer, 32-column
- *   visible viewport.  Per-character colour via direct VRAM writes.
- *   Hardware note: the TMS9918A colour table is keyed by character code, not
- *   screen position -- every cell showing the same character gets the same
- *   colour.  splitThirds divides the screen into three independent 8-row
- *   bands (rows 0-7, 8-15, 16-23), each with its own colour table, so the
- *   same character can appear in different colours in different screen thirds.
+ *   visible viewport.  Per-cell colour via direct VRAM writes.
+ *   Architecture: TMS9918A Graphics II mode, three-band layout.  Each 8-row
+ *   band has 256 independent pattern/colour slots.  Each band covers 32x8 =
+ *   256 cells, so every cell owns one slot: slot = col + (row%8)*32,
+ *   band = row/8.  The name table is a fixed slot map written once at init
+ *   and never changed.  No colour conflicts are possible -- slots are per-cell.
  *
  *   VDP_80COL (F18A 80-column): direct VDP writes, global colour register.
  */
@@ -65,63 +65,87 @@ static uint8_t _last_vdp_fg;
 #endif
 
 /* -----------------------------------------------------------------------
- * Virtual buffer -- G2 colour mode only
+ * Virtual buffer -- G2 per-cell colour mode only
  * 80-column virtual screen; 32-column VDP viewport scrolled by _vp_x.
  * --------------------------------------------------------------------- */
 #ifdef VDP_G2COL
 
-static uint8_t _vbuf_char[24][80]; /* character at each logical cell     */
-static uint8_t _vbuf_col[24][80];  /* packed colour: (fg<<4)|bg           */
-static uint8_t _log_x;             /* logical cursor column  0-79         */
-static uint8_t _log_y;             /* logical cursor row     0-23         */
-static uint8_t _vp_x;              /* viewport left column   0-48         */
-/* Colour to use for each character code in each screen band.
- * _vp_col[band][char_code] holds the packed colour byte (fg<<4)|bg.
- * The three bands cover rows 0-7, 8-15, and 16-23 (splitThirds layout);
- * each band has its own independent colour table so the same character
- * can be green in the top third and white in the middle third, for example.
- * Rebuilt each render by pass 1; used by pass 2 to write VRAM.
- * Static (not a local variable) to keep ~768 bytes off the Z80 stack. */
-static uint8_t _vp_col[3][256];
+static uint8_t _vbuf_char[24][80]; /* character at each logical cell  */
+static uint8_t _vbuf_col[24][80];  /* packed colour: (fg<<4)|bg        */
+static uint8_t _log_x;             /* logical cursor column  0-79      */
+static uint8_t _log_y;             /* logical cursor row     0-23      */
+static uint8_t _vp_x;              /* viewport left column   0-48      */
 
-/* Bit array: which pattern IDs are present in each band's viewport slice.
- * 256 bits = 32 bytes per band.  Bit (ch & 7) of byte (ch >> 3) is set when
- * pattern ID ch appears in the current viewport for that band.
- * Built by pass 1; drives pass 2 so only seen IDs get colour writes. */
-static uint8_t _vp_seen[3][32];
-
-/* Write colour (fg, bg) for pattern ch into band b of the VDP colour table.
- * Band 0 = rows 0-7, band 1 = rows 8-15, band 2 = rows 16-23.
- * Each pattern occupies 8 consecutive bytes in the colour table. */
-static void _g2_colorize(uint8_t b, uint8_t ch, uint8_t fg, uint8_t bg)
+/* Return pointer to the 8-byte glyph for character code ch.
+ * 0x20-0x7F: printable ASCII from ASCII[].
+ * 0x80-0xFF: CP437 extended from CP437_EXT[].
+ * 0x00-0x1F: control codes -- return space glyph (blank). */
+static uint8_t *cp437_glyph(uint8_t ch)
 {
-    uint8_t c = (uint8_t)((fg << 4) | bg);
-    uint8_t i;
-    vdp_setWriteAddress(_vdpColorTableAddr
-                        + (uint16_t)b  * 2048u
-                        + (uint16_t)ch * 8u);
-    for (i = 0u; i < 8u; i++)
-        IO_VDPDATA = c;
+    if (ch >= 0x80u)
+        return (uint8_t *)CP437_EXT + (uint16_t)(ch - 0x80u) * 8u;
+    if (ch >= 0x20u)
+        return (uint8_t *)ASCII     + (uint16_t)(ch - 0x20u) * 8u;
+    return (uint8_t *)ASCII; /* space glyph at offset 0 */
 }
 
-/* Write colour (fg, bg) for pattern ch into all three VDP colour table bands. */
-static void _g2_colorize_all(uint8_t ch, uint8_t fg, uint8_t bg)
+/* Write glyph and colour for one screen cell to VDP VRAM.
+ *
+ * Per-cell layout (Graphics II three-band mode):
+ *   slot        = col + (row & 7) * 32   -- index within the 256-slot bank
+ *   band        = row >> 3               -- 0=rows 0-7, 1=rows 8-15, 2=16-23
+ *   bank_offset = band * 2048
+ *
+ * Pattern address: _vdpPatternGeneratorTableAddr + bank_offset + slot*8
+ * Colour  address: _vdpColorTableAddr            + bank_offset + slot*8
+ *
+ * Two burst writes: 8 glyph bytes then 8 colour bytes. */
+static void _g2_cell_write(uint8_t col, uint8_t row, uint8_t ch, uint8_t color)
 {
-    _g2_colorize(0u, ch, fg, bg);
-    _g2_colorize(1u, ch, fg, bg);
-    _g2_colorize(2u, ch, fg, bg);
+    uint8_t  slot;
+    uint16_t bank_off;
+    uint8_t  i;
+    uint8_t *glyph;
+
+    slot     = (uint8_t)(col + (uint8_t)((row & 7u) * 32u));
+    bank_off = (uint16_t)(row >> 3u) * 2048u;
+
+    glyph = cp437_glyph(ch);
+    vdp_setWriteAddress(_vdpPatternGeneratorTableAddr
+                        + bank_off + (uint16_t)slot * 8u);
+    for (i = 0u; i < 8u; i++)
+        IO_VDPDATA = glyph[i];
+
+    vdp_setWriteAddress(_vdpColorTableAddr
+                        + bank_off + (uint16_t)slot * 8u);
+    for (i = 0u; i < 8u; i++)
+        IO_VDPDATA = color;
+}
+
+/* Write the fixed name table: cell (col, row) -> slot (row%8)*32 + col.
+ * Called once from ansi_reset() after vdp_initG2Mode().
+ * The name table must not be written to again (vdp_clearScreen(),
+ * vdp_print(), vdp_putPattern() all overwrite it -- avoid in G2 mode). */
+static void _g2_init_nametable(void)
+{
+    uint8_t row, col;
+    for (row = 0u; row < 24u; row++) {
+        vdp_setWriteAddress(_vdpPatternNameTableAddr
+                            + (uint16_t)row * 32u);
+        for (col = 0u; col < 32u; col++)
+            IO_VDPDATA = (uint8_t)((row & 7u) * 32u + col);
+    }
 }
 
 /* Write one char to virtual buffer at (x,y) with current fg/bg;
- * also pushes to VDP if the cell falls within the visible viewport. */
+ * also writes to VDP directly if the cell is within the visible viewport. */
 static void _g2_put(uint8_t x, uint8_t y, uint8_t c)
 {
+    uint8_t color = (uint8_t)((_fg << 4) | _bg);
     _vbuf_char[y][x] = c;
-    _vbuf_col[y][x]  = (uint8_t)((_fg << 4) | _bg);
-    if (x >= _vp_x && x < (uint8_t)(_vp_x + 32u)) {
-        _g2_colorize((uint8_t)(y >> 3u), c, _fg, _bg);
-        vdp_putPattern((uint8_t)(x - _vp_x), y, c);
-    }
+    _vbuf_col[y][x]  = color;
+    if (x >= _vp_x && x < (uint8_t)(_vp_x + 32u))
+        _g2_cell_write((uint8_t)(x - _vp_x), y, c, color);
 }
 
 /* Forward declaration -- _g2_write calls _g2_lf on line wrap. */
@@ -143,103 +167,61 @@ static void _g2_write(uint8_t c)
 static void _vbuf_scroll_up(void)
 {
     uint8_t row, col;
-    uint8_t packed;
-    packed = (uint8_t)((VDP_WHITE << 4) | VDP_BLACK);
-    for (row = 0; row < 23u; row++) {
-        for (col = 0; col < 80u; col++) {
+    uint8_t packed = (uint8_t)((VDP_WHITE << 4) | VDP_BLACK);
+    for (row = 0u; row < 23u; row++) {
+        for (col = 0u; col < 80u; col++) {
             _vbuf_char[row][col] = _vbuf_char[(uint8_t)(row + 1u)][col];
             _vbuf_col[row][col]  = _vbuf_col[(uint8_t)(row + 1u)][col];
         }
     }
-    for (col = 0; col < 80u; col++) {
-        _vbuf_char[23][col] = ' ';
-        _vbuf_col[23][col]  = packed;
+    for (col = 0u; col < 80u; col++) {
+        _vbuf_char[23u][col] = ' ';
+        _vbuf_col[23u][col]  = packed;
     }
 }
 
 /* Render the full 32x24 viewport from the virtual buffer to the VDP.
  *
- * The TMS9918A colour table is keyed by character code, not screen position
- * -- all cells showing the same character share one colour entry per band.
- * With splitThirds=true the chip provides three independent colour tables,
- * one per 8-row band, stored at offsets 0, 2048, and 4096 in VRAM.
+ * Burst write strategy: per row -- write all 32 pattern slots for one row
+ * (one address setup + 256 data writes), then immediately write all 32
+ * colour slots for that same row (one more setup + 256 writes), then move
+ * to the next row.  Total: 48 address setups vs 1536 (one per cell) in the
+ * naive form, and vs 6 in the per-band form.
  *
- * Three passes are used to avoid visible colour flash:
+ * The per-band form (v1.02.15) created a ~14ms window where all new patterns
+ * were visible with stale colour data, causing permanent corruption after a
+ * side scroll.  Per-row limits the pattern/colour gap to a single row (~0.6ms)
+ * which is imperceptible.
  *
- *   Pass 1 (CPU only)  -- scan the viewport and decide the final colour for
- *                         each character code in each band.  If the same
- *                         character appears at two different colours within a
- *                         band, the last one scanned wins (unavoidable --
- *                         the hardware allows only one colour per code per
- *                         band).  Also records which codes are actually on
- *                         screen so pass 2 can skip the rest.
- *   Pass 2 (VRAM)      -- write colour table entries to VRAM, but only for
- *                         character codes that actually appear in the viewport.
- *                         All colour writes happen before any character is
- *                         redrawn, so colours are stable when pass 3 runs.
- *                         Syncs to VBlank first to reduce screen tearing.
- *   Pass 3 (VRAM)      -- write the name table (which character goes where).
- *                         Colours are already set, so no flash is visible.
- */
-void ansi_render_viewport(void)
+ * Within each row the 32 cells occupy consecutive slots (slot = col + row%8*32)
+ * so address auto-increment carries us through all 256 pattern bytes and then
+ * all 256 colour bytes without further setup. */
+static void ansi_render_viewport(void)
 {
-    uint8_t  row, col, ch, cl, band, bm, bit, pid;
-    uint16_t pi;
+    uint8_t  row, col, band, i, cl;
+    uint8_t *glyph;
 
-    /* Clear seen-bit arrays (96 bytes). */
-    for (band = 0u; band < 3u; band++)
-        for (col = 0u; col < 32u; col++)
-            _vp_seen[band][col] = 0u;
-
-    /* Pass 1: build _vp_col and _vp_seen for each band.
-     * Band 0 = rows 0-7, band 1 = rows 8-15, band 2 = rows 16-23. */
-    for (band = 0u; band < 3u; band++) {
-        for (row = (uint8_t)(band * 8u);
-             row < (uint8_t)(band * 8u + 8u);
-             row++) {
-            for (col = 0u; col < 32u; col++) {
-                ch = _vbuf_char[row][(uint8_t)(_vp_x + col)];
-                cl = _vbuf_col[row][(uint8_t)(_vp_x + col)];
-                _vp_col[band][ch] = cl;
-                _vp_seen[band][(uint8_t)(ch >> 3u)] |=
-                    (uint8_t)(1u << (ch & 7u));
-            }
-        }
-    }
-
-    /* Wait for VBlank before writing VRAM to reduce visible tearing. */
     vdp_waitVDPReadyInt();
 
-    /* Pass 2: write colour entries only for pattern IDs actually present
-     * in the viewport.  Iterates the 32-byte seen-bit array per band;
-     * typical BBS content uses ~50-80 distinct chars per band, so this
-     * writes roughly 50-80 * 3 * (1 addr + 8 data) vs 256 * 3 * (1 addr
-     * + 8 data) for a full table write.  Much faster in practice. */
-    for (band = 0u; band < 3u; band++) {
-        for (pi = 0u; pi < 32u; pi++) {
-            bm = _vp_seen[band][(uint8_t)pi];
-            if (!bm) continue;
-            for (bit = 0u; bit < 8u; bit++) {
-                if (bm & (uint8_t)(1u << bit)) {
-                    pid = (uint8_t)((uint8_t)(pi << 3u) | bit);
-                    cl  = _vp_col[band][pid];
-                    vdp_setWriteAddress(_vdpColorTableAddr
-                                        + (uint16_t)band * 2048u
-                                        + (uint16_t)pid  * 8u);
-                    IO_VDPDATA = cl; IO_VDPDATA = cl;
-                    IO_VDPDATA = cl; IO_VDPDATA = cl;
-                    IO_VDPDATA = cl; IO_VDPDATA = cl;
-                    IO_VDPDATA = cl; IO_VDPDATA = cl;
-                }
-            }
-        }
-    }
-
-    /* Pass 3: update name table -- colours are stable, no flash. */
     for (row = 0u; row < 24u; row++) {
+        band = (uint8_t)(row >> 3u);
+
+        /* Pattern burst: all 32 cells of this row (256 bytes sequential). */
+        vdp_setWriteAddress(_vdpPatternGeneratorTableAddr
+                            + (uint16_t)band * 2048u
+                            + (uint16_t)(row & 7u) * 256u);
         for (col = 0u; col < 32u; col++) {
-            vdp_putPattern(col, row,
-                           _vbuf_char[row][(uint8_t)(_vp_x + col)]);
+            glyph = cp437_glyph(_vbuf_char[row][(uint8_t)(_vp_x + col)]);
+            for (i = 0u; i < 8u; i++) IO_VDPDATA = glyph[i];
+        }
+
+        /* Colour burst: all 32 cells of this row (256 bytes sequential). */
+        vdp_setWriteAddress(_vdpColorTableAddr
+                            + (uint16_t)band * 2048u
+                            + (uint16_t)(row & 7u) * 256u);
+        for (col = 0u; col < 32u; col++) {
+            cl = _vbuf_col[row][(uint8_t)(_vp_x + col)];
+            for (i = 0u; i < 8u; i++) IO_VDPDATA = cl;
         }
     }
 }
@@ -259,27 +241,21 @@ static void _g2_lf(void)
 static void _g2_clearrows(uint8_t top, uint8_t bot)
 {
     uint8_t row, col;
-    uint8_t packed;
-    packed = (uint8_t)((VDP_WHITE << 4) | VDP_BLACK);
+    uint8_t packed = (uint8_t)((VDP_WHITE << 4) | VDP_BLACK);
     for (row = top; row <= bot; row++) {
-        for (col = 0; col < 80u; col++) {
+        for (col = 0u; col < 80u; col++) {
             _vbuf_char[row][col] = ' ';
             _vbuf_col[row][col]  = packed;
         }
-    }
-    /* Ensure space has white-on-black colour in all three bands. */
-    _g2_colorize_all(' ', VDP_WHITE, VDP_BLACK);
-    for (row = top; row <= bot; row++) {
-        for (col = 0; col < 32u; col++) {
-            vdp_putPattern(col, row, ' ');
-        }
+        for (col = 0u; col < 32u; col++)
+            _g2_cell_write(col, row, ' ', packed);
     }
 }
 
 /* Scroll visible viewport left by one column; re-render. */
 void ansi_viewport_left(void)
 {
-    if (_vp_x > 0) {
+    if (_vp_x > 0u) {
         _vp_x--;
         ansi_render_viewport();
     }
@@ -297,7 +273,7 @@ void ansi_viewport_right(void)
 /* Jump viewport left by 8 columns (Page Back key). */
 void ansi_viewport_page_left(void)
 {
-    _vp_x = (_vp_x >= 8u) ? (uint8_t)(_vp_x - 8u) : 0;
+    _vp_x = (_vp_x >= 8u) ? (uint8_t)(_vp_x - 8u) : 0u;
     ansi_render_viewport();
 }
 
@@ -354,14 +330,20 @@ void ansi_cycle_colour(void)
  * 80-col:    restore by replaying _vdp_textBuffer back to VRAM.
  * --------------------------------------------------------------------- */
 
-/* Write one character directly to the VDP name table at physical (x, y).
- * Uses _vdpCursorMaxXFull (32 for G2, 80 for TEXT80) as the row stride. */
+/* Write one character to the physical screen at (x, y) for the help overlay.
+ * G2:    write glyph+colour to the cell's per-cell pattern/colour slot.
+ *        Must NOT write to the name table -- it holds fixed slot IDs.
+ * 80-col: write char code directly to the name table (original behaviour). */
 static void _help_put(uint8_t x, uint8_t y, uint8_t ch)
 {
+#ifdef VDP_G2COL
+    _g2_cell_write(x, y, ch, (uint8_t)((VDP_WHITE << 4) | VDP_BLACK));
+#else
     vdp_setWriteAddress(_vdpPatternNameTableAddr
                         + (uint16_t)y * (uint16_t)_vdpCursorMaxXFull
                         + (uint16_t)x);
     IO_VDPDATA = ch;
+#endif
 }
 
 /* Write a null-terminated string directly to the VDP name table at (x, y). */
@@ -450,7 +432,7 @@ void ansi_show_help(void)
         for (i = 20u; i <= 59u; i++) _help_put(i, 16u, 0xCDu);
         _help_put(60u, 16u, 0xBCu);
         /* Wait for any key, then restore affected rows from _vdp_textBuffer.
-         * _vdp_textBuffer was not updated (we wrote directly to VRAM), so
+         * _vdp_textBuffer was not updated (written directly to VRAM), so
          * it still holds the original screen content. */
         while (!isKeyPressed()) ;
         getChar();
@@ -629,17 +611,8 @@ static void _dispatch_csi(uint8_t cmd)
         case 2:
             /* Erase entire screen */
 #ifdef VDP_G2COL
-            {
-                uint8_t r2, c2;
-                uint8_t pk = (uint8_t)((VDP_WHITE << 4) | VDP_BLACK);
-                for (r2 = 0; r2 < 24u; r2++)
-                    for (c2 = 0; c2 < 80u; c2++) {
-                        _vbuf_char[r2][c2] = ' ';
-                        _vbuf_col[r2][c2]  = pk;
-                    }
-                vdp_clearScreen();
-                vdp_setCursor2(0, 0);
-            }
+            _g2_clearrows(0u, 23u);
+            _SET_CUR(0u, 0u);
 #else
             vdp_clearScreen();
 #endif
@@ -717,30 +690,31 @@ void ansi_reset(void)
 #ifdef VDP_G2COL
     {
         uint8_t  row, col, band;
-        uint16_t pi;
-        uint8_t  packed;
-        packed = (uint8_t)((VDP_WHITE << 4) | VDP_BLACK);
-        _log_x = 0;
-        _log_y = 0;
-        _vp_x  = 0;
-        for (row = 0u; row < 24u; row++) {
+        uint16_t i;
+        uint8_t  packed = (uint8_t)((VDP_WHITE << 4) | VDP_BLACK);
+        _log_x = 0u;
+        _log_y = 0u;
+        _vp_x  = 0u;
+        /* Clear virtual buffer. */
+        for (row = 0u; row < 24u; row++)
             for (col = 0u; col < 80u; col++) {
                 _vbuf_char[row][col] = ' ';
                 _vbuf_col[row][col]  = packed;
             }
+        /* Write fixed name table: cell (col, row) -> slot (row%8)*32 + col. */
+        _g2_init_nametable();
+        /* Blank all pattern slots (space = all-zero glyph) across all 3 bands,
+         * then set white-on-black colour for all slots.
+         * Sequential bursts minimise address-setup overhead. */
+        for (band = 0u; band < 3u; band++) {
+            vdp_setWriteAddress(_vdpPatternGeneratorTableAddr
+                                + (uint16_t)band * 2048u);
+            for (i = 0u; i < 2048u; i++)
+                IO_VDPDATA = 0u;
         }
-        /* Init _vp_col for all three bands so the first render has valid data
-         * for pattern IDs not yet seen in the viewport. */
-        for (pi = 0u; pi < 256u; pi++) {
-            _vp_col[0][pi] = packed;
-            _vp_col[1][pi] = packed;
-            _vp_col[2][pi] = packed;
-        }
-        /* Write white-on-black to all three VDP colour table bands in
-         * sequential 2048-byte bursts (256 patterns * 8 bytes each). */
         for (band = 0u; band < 3u; band++) {
             vdp_setWriteAddress(_vdpColorTableAddr + (uint16_t)band * 2048u);
-            for (pi = 0u; pi < 2048u; pi++)
+            for (i = 0u; i < 2048u; i++)
                 IO_VDPDATA = packed;
         }
     }
@@ -772,7 +746,7 @@ void ansi_feed(uint8_t c)
             return;
         }
         if (c == 0x0A) {
-            /* LF: move down one row (do NOT reset column -- telnet NVT) */
+            /* LF: move down one row (do NOT reset column -- telnet convention) */
 #ifdef VDP_G2COL
             _g2_lf();
 #else
@@ -841,12 +815,13 @@ void ansi_feed(uint8_t c)
             return;
         }
         if (c == 'c') {
-            /* Full terminal reset */
+            /* Full terminal reset.
+             * G2 mode: ansi_reset() rebuilds the name table, clears the
+             * virtual buffer, and blanks all VRAM slots -- do NOT call
+             * vdp_clearScreen() here, it would zero the name table again.
+             * 80-col mode: vdp_clearScreen() is still needed. */
             ansi_reset();
-#ifdef VDP_G2COL
-            vdp_clearScreen();
-            vdp_setCursor2(0, 0);
-#else
+#ifndef VDP_G2COL
             vdp_clearScreen();
 #endif
             _state = _ST_TEXT;

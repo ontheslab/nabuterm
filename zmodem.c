@@ -6,7 +6,7 @@
  *
  * Implements receive-only ZModem over the IA TCP connection.
  * Sends ZHEX frames; accepts ZHEX, ZBIN, and CRC-32 binary headers if seen.
- * Does NOT advertise CANFC32 in ZRINIT -- CRC-16 remains the intended mode.
+ * CANFC32 is omitted from the ZRINIT flags -- CRC-16 is used throughout.
  * Received files are written to the IA file store (append-only).
  *
  * Protocol reference: zmp by Wayne Warthen (github.com/mecparts/zmp) --
@@ -48,7 +48,7 @@
 #define _ZRUB0  0x6C   /* escaped 0x7F               */
 #define _ZRUB1  0x6D   /* escaped 0xFF               */
 
-/* ZRINIT capability flags we advertise */
+/* Capability flags sent in the ZRINIT frame */
 #define _CANFDX   0x01
 #define _CANOVIO  0x02
 /* NOTE: CANFC32 (0x20) deliberately omitted -- forces CRC-16 */
@@ -114,7 +114,7 @@ static uint16_t _crc16(uint16_t crc, uint8_t b)
 }
 
 /* CRC-32 (IEEE 802.3 / PKZIP reflected polynomial 0xEDB88320).
- * Used only when the sender switches to CRC-32 -- not our normal path. */
+ * Used only when the sender switches to CRC-32 -- not the normal path. */
 static uint32_t _crc32b(uint32_t crc, uint8_t b)
 {
     uint8_t i;
@@ -137,8 +137,8 @@ static uint32_t _crc32b(uint32_t crc, uint8_t b)
 static int32_t  _zdbg_got;    /* last return from rn_TCPHandleRead */
 static uint8_t  _zdbg_htype;  /* header type byte read after ZDLE  */
 static uint8_t  _zdbg_hfail;  /* _rxhdr failure code               */
-static uint16_t _zdbg_crc_c;  /* CRC we computed on mismatch       */
-static uint16_t _zdbg_crc_r;  /* CRC we received on mismatch       */
+static uint16_t _zdbg_crc_c;  /* CRC computed on mismatch          */
+static uint16_t _zdbg_crc_r;  /* CRC received on mismatch          */
 static uint8_t  _zdbg_rxfail; /* _rxdata() failure code            */
 
 /* Read one raw byte from the TCP stream.
@@ -748,7 +748,7 @@ static uint8_t _rxdata(void)
             return term;
         }
 
-        /* Sub-packet exceeds our 1024-byte buffer.
+        /* Sub-packet exceeds the 1024-byte buffer.
          * Drain the remainder to re-sync the stream, then return 0xFE.
          * The caller sends ZRPOS; AmiExpress halves its block_size on
          * each ZRPOS and will eventually reach <= 1024 bytes/sub-packet.
@@ -874,7 +874,7 @@ void zmodem_receive(uint8_t tcpHandle, uint8_t *pre, uint8_t prelen)
         switch (ftype) {
 
         case _ZRQINIT:
-            /* Sender retrying init -- resend our capabilities */
+            /* Sender retrying init -- resend capabilities */
             _txzhex(_ZRINIT, 0, 4u, 0, _CANFDX | _CANOVIO);
             break;
 

@@ -81,7 +81,7 @@ bool tn_feed(uint8_t b, uint8_t tcpHandle)
         case TN_WILL:
             /* Server offers to enable an option */
             if (b == TN_OPT_ECHO) {
-                tn_server_echo = true;          /* server will echo our input */
+                tn_server_echo = true;          /* server will echo all input */
                 _tn_reply(TN_DO, b, tcpHandle);
             } else if (b == TN_OPT_SGA) {
                 _tn_reply(TN_DO, b, tcpHandle); /* accept full-duplex mode */

@@ -1,6 +1,6 @@
 /*
  * NABU BBS Telnet Terminal
- * v1.01.12 -- ZModem: AmiExpress protocol fixes, display cleanup, file size
+ * v1.02.17 -- ZModem: switch to text mode around transfer in G2 build
  *
  * Build G2 colour (stock):  zcc +nabu ...             nterm.c -o NABUTERM
  * Build 80-col (F18A):      zcc +nabu ... -DVDP_80COL nterm.c -o NABUTERM80
@@ -14,7 +14,7 @@
  * --------------------------------------------------------------------- */
 #define FONT_CP437
 #define BIN_TYPE BIN_HOMEBREW
-#define DISABLE_CURSOR          /* we drive the cursor ourselves */
+#define DISABLE_CURSOR          /* cursor managed by this program */
 
 /* Screen width -- used by ansi.c and menu.c.
  * Both builds use 80 as the logical column width:
@@ -33,7 +33,7 @@
 
 /* Single version string used by all sub-modules (adjacent string literals
  * concatenate at compile time: "NABU BBS Terminal  " NABUTERM_VERSION). */
-#define NABUTERM_VERSION "v1.01.12"
+#define NABUTERM_VERSION "v1.02.17"
 
 /* Sub-modules included directly -- single translation unit. */
 #include "telnet.c"
@@ -91,10 +91,10 @@ static void _load_font(void)
     uint8_t ci;
     vdp_loadASCIIFont(ASCII);
 #ifdef VDP_G2COL
-    /* In splitThirds mode the chip has three separate character shape tables,
+    /* In Graphics II mode the chip has three separate character shape tables,
      * one per 8-row band.  vdp_loadASCIIFont() only fills the first one, so
      * text would show garbage glyphs in rows 8-23 without this copy.
-     * We duplicate the same font data into the second and third tables here. */
+     * The same font data is duplicated into the second and third tables here. */
     {
         const uint8_t *src;
         const uint8_t *end;
@@ -107,8 +107,8 @@ static void _load_font(void)
         do { IO_VDPDATA = *src; src++; } while (src != end);
     }
 #endif
-    /* vdp_loadPatternToId() fills all three shape tables automatically when
-     * splitThirds is active, so the CP437 extended characters need no extra work. */
+    /* vdp_loadPatternToId() fills all three shape tables automatically in
+     * Graphics II mode, so the CP437 extended characters need no extra work. */
     for (ci = 0u; ci < 128u; ci++)
         vdp_loadPatternToId(0x80u + ci,
             (uint8_t *)CP437_EXT + (uint16_t)ci * 8u);
@@ -174,19 +174,21 @@ void main(void)
 
         /* -- Switch to terminal display mode --------------------------- */
 #ifdef VDP_G2COL
-        /* G2 colour mode: 32 visible cols, 80-col virtual buffer.
-         * autoScroll=false: we manage vertical scrolling via the virtual
+        /* G2 per-cell colour mode: 32 visible cols, 80-col virtual buffer.
+         * autoScroll=false: vertical scrolling is managed via the virtual
          * buffer so NABULIB does not interfere.
-         * vdp_enableVDPReadyInt() enables the VDP VBlank interrupt so
-         * vdp_waitVDPReadyInt() in ansi_render_viewport() can sync to
-         * the beam and reduce screen tear during full redraws. */
+         * vdp_enableVDPReadyInt() enables the VDP vertical blank interrupt
+         * used by ansi_render_viewport() to reduce screen tearing on full redraws.
+         * NOTE: do NOT call _load_font() here -- per-cell mode writes glyph
+         * data directly to each cell's pattern slot on demand; there is no
+         * shared per-char-code pattern table to pre-load. */
         vdp_initG2Mode(VDP_BLACK, false, false, false, true);
-        _load_font();
         vdp_enableVDPReadyInt();
 #endif
 
-        /* Reset sub-module state.  ansi_reset() sets G2 pattern colours
-         * in G2 mode -- must be called AFTER vdp_initG2Mode(). */
+        /* Reset sub-module state.  In G2 mode ansi_reset() writes the fixed
+         * name table and blanks all pattern/colour slots -- must be called
+         * AFTER vdp_initG2Mode(). */
         tn_init();
         ansi_reset();
         _zm        = 0;
@@ -195,15 +197,25 @@ void main(void)
         /* Proactively request Suppress-Go-Ahead (full-duplex mode) */
         rn_TCPHandleWrite(handle, 0, 3, _sga_req);
 
-        /* One-shot status hint -- scrolls away as BBS output flows */
+        /* One-shot status hint -- scrolls away as BBS output flows.
+         * G2 path: routed through ansi_feed() -- vdp_print() and
+         * vdp_clearScreen() write raw char codes / zeros to the VDP name
+         * table, which holds fixed slot IDs in per-cell mode and must not
+         * be overwritten directly. */
+#ifdef VDP_G2COL
+        {
+            static const uint8_t _hint[] =
+                "Connected.  ^] disc  ^E echo  Arrows scroll  SYM help\r\n";
+            uint8_t hi;
+            for (hi = 0u; _hint[hi]; hi++)
+                ansi_feed(_hint[hi]);
+        }
+#else
         vdp_clearScreen();
         vdp_setCursor2(0, 0);
-#ifdef VDP_80COL
         vdp_print((uint8_t *)"Connected.  ^] disc  ^E echo  ^T colour  SYM help");
-#else
-        vdp_print((uint8_t *)"Connected.  ^] disc  ^E echo  Arrows scroll  SYM help");
-#endif
         nl();
+#endif
 
         /* -- Main telnet loop ------------------------------------------ */
         while (1) {
@@ -227,9 +239,23 @@ void main(void)
                             {
                                 uint8_t rem = (uint8_t)(
                                     (int32_t)got - (int32_t)(i + 1));
+#ifdef VDP_G2COL
+                                /* zmodem_receive() uses text-mode VDP
+                                 * functions that would corrupt the G2 name
+                                 * table.  Switch to text mode for the
+                                 * transfer, then restore G2 after. */
+                                vdp_initTextMode(VDP_WHITE, VDP_BLACK, true);
+                                _load_font();
+#endif
                                 zmodem_receive(handle,
                                                _rx + (uint8_t)(i + 1u),
                                                rem);
+#ifdef VDP_G2COL
+                                vdp_initG2Mode(VDP_BLACK, false, false,
+                                               false, true);
+                                vdp_enableVDPReadyInt();
+                                ansi_reset();
+#endif
                             }
                             break;
                         } else {
@@ -278,7 +304,7 @@ void main(void)
                 if (key == 0x7F)    /* NABU backspace -> BS for server */
                     key = 0x08;
 
-                if (key == 0x0A)    /* Enter -> CR for telnet NVT */
+                if (key == 0x0A)    /* Enter -> CR for telnet */
                     key = 0x0D;
 
                 _tx[0] = key;

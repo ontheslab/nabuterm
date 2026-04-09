@@ -9,8 +9,8 @@
 #include <stdbool.h>
 
 /* Reset all parser state and colour attributes.
- * In G2 mode also clears the virtual buffer and resets pattern colours.
- * Call once before each new connection. */
+ * In G2 mode: clears virtual buffer, writes fixed name table, blanks all
+ * per-cell pattern/colour slots.  Call once before each new connection. */
 void ansi_reset(void);
 
 /* Feed one display byte (post-telnet-strip) into the parser.
@@ -18,10 +18,6 @@ void ansi_reset(void);
 void ansi_feed(uint8_t c);
 
 #ifdef VDP_G2COL
-
-/* Re-render the full 32x24 VDP viewport from the virtual buffer.
- * Called after viewport scroll or full-screen operations. */
-void ansi_render_viewport(void);
 
 /* Scroll the visible viewport left / right by one column.
  * Called from the keyboard handler in nterm.c. */

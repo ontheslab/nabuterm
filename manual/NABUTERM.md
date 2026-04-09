@@ -1,0 +1,108 @@
+# NABU BBS Terminal v1.02.17
+
+ANSI BBS telnet terminal for the NABU Personal Computer.
+Connect to ANSI BBS systems via the RetroNET Internet Adapter.
+
+---
+
+## Two Builds -- Pick the Right One
+
+| File | Display | Hardware required |
+|------|---------|-------------------|
+| `NABUTERM.nabu` | 40 columns, per-character ANSI colour | Any NABU PC (stock TMS9918A) |
+| `NABUTERM80.nabu` | 80 columns, single global colour | F18A or compatible FPGA upgrade |
+
+Both builds have the same features. Use `NABUTERM80.nabu` if you have an F18A or similar upgrade -- ANSI art
+designed for 80 columns is much easier to read. Use `NABUTERM.nabu` on stock hardware.
+
+The 40-column build uses the TMS9918A's Graphics II mode to render per-character ANSI
+colour on stock hardware. BBS content designed for 80 columns is displayed in a scrollable
+80-column virtual buffer -- use the arrow keys to pan left and right.
+
+---
+
+## Loading
+
+Copy the appropriate `.nabu` file to your IA file store. Load it from the NABU boot menu
+the same way as any other NABU application.
+
+---
+
+## Main Menu
+
+The preset menu appears on startup and after every disconnect.
+
+| Key | Action |
+|-----|--------|
+| `1` -- `5` | Connect to that preset. If the slot is empty, you will be prompted to enter a hostname and port first. |
+| `E` | Edit a preset -- enter hostname then port. Press Enter on a blank port line to keep the existing port. Press ESC at the hostname prompt to cancel without saving. |
+| `D` | Delete a preset slot. |
+| `Q` | Quit -- returns the NABU to the boot loader. |
+
+Presets are saved to `NBTERM.CFG` on the IA file store and survive power cycles.
+Default port is 23 (standard telnet). Five slots available.
+
+---
+
+## In Session
+
+A brief key-reference line is printed when the connection opens. Press SYM at any time
+to show the full key reference overlay.
+
+### Controls -- both builds
+
+| Key | Action |
+|-----|--------|
+| `CTRL-]` | Disconnect and return to the main menu. |
+| `CTRL-E` | Toggle local echo override. Use this when a BBS sends no echo and your typing is invisible. |
+| `SYM` | Show key reference overlay. Any key dismisses it. |
+
+### Controls -- 40-column build only
+
+| Key | Action |
+|-----|--------|
+| `Left` / `Right` arrows | Scroll the viewport left or right by one column. |
+| `Page Left` / `Page Right` | Scroll the viewport left or right by 8 columns. |
+
+### Controls -- 80-column build only
+
+| Key | Action |
+|-----|--------|
+| `CTRL-T` | Cycle text colour through a preset list. |
+
+### Key mapping
+
+Backspace and Enter are mapped correctly for telnet NVT.
+The full CP437 character set is loaded at startup -- box drawing, block graphics, and
+extended characters all render correctly.
+
+---
+
+## ZModem File Receive
+
+Transfers start automatically when the BBS initiates one -- nothing to do on your end.
+Progress is shown on screen:
+
+```
+ZModem Receive
+  FILENAME.EXT (42 KB)
+    Received: 12345 bytes
+  ...
+  Complete: 43008 bytes
+```
+
+Received files are written to the IA file store under the filename the sender provides.
+If a transfer stalls or you need to abort, press `CTRL-]` to disconnect.
+
+Tested against AmiExpress (Amiga BBS) and Mystic BBS on real NABU hardware.
+
+---
+
+## Known Limitations
+
+- **ZModem send is not implemented.** Receive only -- the NABU cannot initiate an upload.
+- **80-column build: no per-character background colour.** F18A (and similar) TEXT80 mode
+  uses a single global colour register. All text renders on black regardless of ANSI colour
+  codes. The 40-column build does not have this limitation.
+- **80-column build requires F18A or similar upgrade.** `NABUTERM80.nabu` will not run on
+  stock TMS9918A.

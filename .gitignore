@@ -28,10 +28,13 @@ Thumbs.db
 desktop.ini
 xfer_n.bat
 
-
 # Backup / old file copies
 *.old
 
 # Private development files — never publish these
 docs/
 DEVLOG.md
+
+archive/
+release/
+archive.ps1

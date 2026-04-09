@@ -8,6 +8,10 @@
  *   hostname:port\n
  * Empty slots are stored as a bare newline.  Five lines, always.
  *
+ * NOTE: _load_presets uses rn_fileHandleReadSeq for sequential reading.
+ *   rn_fileHandleLineCount and rn_fileHandleGetLine caused an NNS/NIA
+ *   lockup on load and are not used here.
+ *
  * Controls:
  *   [1-5]  Connect to preset (prompts edit if slot is empty)
  *   [E]    Edit a preset slot
@@ -55,15 +59,19 @@ static uint8_t _u16tostr(uint8_t *buf, uint16_t v)
 /* -----------------------------------------------------------------------
  * _load_presets — read NBTERM.CFG from the IA file store.
  * Falls back to a single default preset when the file doesn't exist.
+ * Uses rn_fileHandleReadSeq to avoid rn_fileHandleLineCount /
+ * rn_fileHandleGetLine which can hang on some NNS versions.
  * --------------------------------------------------------------------- */
 static void _load_presets(void)
 {
     uint8_t  fh;
+    uint8_t  buf[128];
     uint8_t  line[80];
-    uint8_t  i, j;
-    uint16_t cnt, linelen;
+    uint8_t  i, j, llen;
+    uint16_t got, b;
     uint8_t  *p;
     uint16_t port;
+    uint8_t  done;
 
     for (i = 0; i < _NPRESETS; i++) {
         _presets[i].host[0] = 0;
@@ -79,32 +87,39 @@ static void _load_presets(void)
         return;
     }
 
-    cnt = rn_fileHandleLineCount(fh);
-
-    for (i = 0; i < _NPRESETS; i++) {
-        if ((uint16_t)i >= cnt) break;
-        /* rn_fileHandleGetLine does NOT null-terminate — do it ourselves */
-        linelen = rn_fileHandleGetLine(fh, (uint16_t)i, line);
-        if (linelen < (uint16_t)sizeof(line)) line[linelen] = 0;
-        else line[sizeof(line) - 1] = 0;
-
-        /* Parse "hostname:port" */
-        p = line;
-        j = 0;
-        while (*p && *p != ':' && *p != '\r' && *p != '\n' && j < MENU_HOST_MAX) {
-            _presets[i].host[j++] = *p++;
-        }
-        _presets[i].host[j] = 0;
-
-        port = 0;
-        if (*p == ':') {
-            p++;
-            while (*p >= '0' && *p <= '9') {
-                port = (uint16_t)(port * 10u + (uint16_t)(*p - '0'));
-                p++;
+    /* Read file in 128-byte chunks, split into lines, parse each preset. */
+    i    = 0;
+    llen = 0;
+    done = 0;
+    while (!done && i < _NPRESETS) {
+        got = rn_fileHandleReadSeq(fh, buf, 0, (uint16_t)sizeof(buf));
+        if (got == 0) break;
+        for (b = 0; b < got && !done; b++) {
+            uint8_t c = buf[b];
+            if (c == '\n' || c == '\r') {
+                if (c == '\r') continue;   /* skip CR in CRLF pairs */
+                /* end of line — parse it */
+                line[llen] = 0;
+                p = line;
+                j = 0;
+                while (*p && *p != ':' && j < MENU_HOST_MAX)
+                    _presets[i].host[j++] = *p++;
+                _presets[i].host[j] = 0;
+                port = 0;
+                if (*p == ':') {
+                    p++;
+                    while (*p >= '0' && *p <= '9')
+                        port = (uint16_t)(port * 10u + (uint16_t)(*p++ - '0'));
+                }
+                if (port > 0) _presets[i].port = port;
+                llen = 0;
+                i++;
+                if (i >= _NPRESETS) done = 1;
+            } else if (llen < (uint8_t)(sizeof(line) - 1)) {
+                line[llen++] = c;
             }
         }
-        if (port > 0) _presets[i].port = port;
+        if (got < (uint16_t)sizeof(buf)) break;  /* EOF */
     }
 
     rn_fileHandleClose(fh);
